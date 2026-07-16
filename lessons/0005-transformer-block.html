@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>第5课：多头注意力与 Transformer Block</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}]});"></script>
+</head>
+<body>
+
+<div class="lesson-meta">
+  <strong>第 5 课</strong> · 补充基础 · Gated Delta Networks 系列<br>
+  <a href="../MISSION.md">使命</a> ·
+  <a href="../RESOURCES.md">资源</a> ·
+  <a href="../GLOSSARY.md">术语表</a>
+</div>
+
+<h1>多头注意力与 Transformer Block</h1>
+
+<p>上一课我们学了单头自注意力。实际模型使用<strong>多头注意力</strong>——
+把大向量拆成多个小头并行计算，每个头关注不同的模式。
+然后我们把所有积木组装成一个完整的 Transformer Block——
+这正是 GDN 层所在的上下文。</p>
+
+<h2>多头注意力：让模型"多角度"看序列</h2>
+
+<h3>直觉</h3>
+<p>一个注意力头只能学一种关注模式。比如：</p>
+<ul style="margin-bottom: 1rem; padding-left: 1.5rem;">
+  <li>头1可能学习语法关系（主语-谓语）</li>
+  <li>头2可能学习语义关系（同义词）</li>
+  <li>头3可能学习位置关系（相邻 token）</li>
+</ul>
+<p>多头 = 并行运行多个注意力头，每个头看不同维度。</p>
+
+<h3>实现方式</h3>
+<p>不是真的创建多个小矩阵，而是把 hidden_size 拆分成 <code>num_heads × head_dim</code>：</p>
+
+<pre><code># hidden_size = 512, num_heads = 8, head_dim = 64
+# 一个头的维度 = 64
+
+# 投影后的形状变化:
+x:     [B, T, 512]       # 输入
+q:     [B, T, 512]       # 投影后还是 512
+q:     [B, T, 8, 64]     # 拆成 8 个头，每个 64 维
+q:     [B, 8, T, 64]     # 转置，让头维度在前
+
+# 每个头独立做注意力 (64 维向量之间)
+# 8 个头的结果拼回 512 维</code></pre>
+
+<h3>图示</h3>
+
+<pre><code>          输入 x [B, T, 512]
+              │
+     ┌────────┼────────┐
+     │        │        │
+   Q投影    K投影    V投影
+     │        │        │
+  [B,T,512] [B,T,512] [B,T,512]
+     │        │        │
+  拆成8头  拆成8头  拆成8头
+     │        │        │
+  [B,8,T,64] [B,8,T,64] [B,8,T,64]
+     │        │        │
+     └────注意力(每个头独立)────┘
+              │
+         [B, 8, T, 64]
+              │
+         拼回 [B, T, 512]
+              │
+           O投影
+              │
+         [B, T, 512]</code></pre>
+
+<div class="callout callout-insight">
+<strong>关键</strong>：每个头看到的是同一输入的不同投影子空间。
+头的数量 × 头的维度 = 隐藏维度。例如 GDN 默认 <code>num_heads=6, head_dim=256</code>，所以 <code>key_dim = 6×256 = 1536</code>。
+</div>
+
+<h2>GDN 的多头差异</h2>
+
+<p>GDN 与标准注意力在多头上的一个重要差异：<strong>K 和 V 的维度可以不同</strong>。</p>
+
+<pre><code># 标准注意力:
+#   head_dim = head_k_dim = head_v_dim (K和V同维度)
+
+# GDN:
+#   head_k_dim = 256  (key 维度)
+#   head_v_dim = 512  (value 维度, expand_v=2)
+#   状态矩阵 S: [256, 512] 而非 [256, 256]</code></pre>
+
+<p>这意味着 GDN 的状态矩阵可以是"长方形"的——用较小的 key 维度检索，存储较大的 value 维度信息。</p>
+
+<h2>FFN / MLP 层：逐位置的非线性变换</h2>
+
+<p>注意力层让 token 之间交互信息。之后需要一个<strong>逐位置的前馈网络 (FFN)</strong>，
+对每个 token 独立做非线性变换。现代模型使用 SwiGLU：</p>
+
+<div class="math-block">
+$$\text{FFN}(x) = (\text{SiLU}(x W_{\text{gate}}) \odot x W_{\text{up}}) W_{\text{down}}$$
+</div>
+
+<p>三个线性层：gate 和 up 扩展维度（通常 4×），down 压缩回来。</p>
+
+<pre><code>class SwiGLU(nn.Module):
+    def __init__(self, hidden_size, intermediate_size):
+        super().__init__()
+        self.gate = nn.Linear(hidden_size, intermediate_size, bias=False)
+        self.up   = nn.Linear(hidden_size, intermediate_size, bias=False)
+        self.down = nn.Linear(intermediate_size, hidden_size, bias=False)
+
+    def forward(self, x):
+        return self.down(F.silu(self.gate(x)) * self.up(x))</code></pre>
+
+<h2>完整 Transformer Block</h2>
+
+<p>把所有积木拼起来。一个 Pre-Norm Transformer Block：</p>
+
+<pre><code>class TransformerBlock(nn.Module):
+    def __init__(self, hidden_size, num_heads):
+        super().__init__()
+        self.attn_norm = nn.RMSNorm(hidden_size)    # 注意力前归一化
+        self.attn = SelfAttention(hidden_size, num_heads)
+        self.mlp_norm = nn.RMSNorm(hidden_size)     # MLP前归一化
+        self.mlp = SwiGLU(hidden_size, hidden_size * 4)
+
+    def forward(self, x):
+        # 子层1: Pre-Norm + 注意力 + 残差
+        x = x + self.attn(self.attn_norm(x))
+
+        # 子层2: Pre-Norm + MLP + 残差
+        x = x + self.mlp(self.mlp_norm(x))
+        return x</code></pre>
+
+<h3>数据流图</h3>
+
+<pre><code>    x ─────────────────────────┐
+    │                           │
+  RMSNorm                      │ (残差)
+    │                           │
+  注意力/GDN                    │
+    │                           │
+    └─────────── + ←───────────┘
+                │
+    h ─────────────────────────┐
+    │                           │
+  RMSNorm                      │ (残差)
+    │                           │
+  MLP (SwiGLU)                  │
+    │                           │
+    └─────────── + ←───────────┘
+                │
+              输出</code></pre>
+
+<h2>GDN Block：唯一的不同</h2>
+
+<p>GDN 的 Block 结构<strong>完全一样</strong>，只是注意力层被替换：</p>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.9em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;">组件</th>
+      <th style="text-align:center; padding: 0.5rem;">标准 Transformer</th>
+      <th style="text-align:center; padding: 0.5rem;">GDN</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">注意力层</td>
+      <td style="text-align:center;"><code>SelfAttention</code></td>
+      <td style="text-align:center;"><code>GatedDeltaNet</code></td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">归一化</td>
+      <td style="text-align:center;">RMSNorm</td>
+      <td style="text-align:center;">RMSNorm (相同)</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">MLP</td>
+      <td style="text-align:center;">SwiGLU</td>
+      <td style="text-align:center;">SwiGLU (相同)</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">残差连接</td>
+      <td style="text-align:center;">Pre-Norm</td>
+      <td style="text-align:center;">Pre-Norm (相同)</td>
+    </tr>
+    <tr>
+      <td style="padding: 0.5rem;">短卷积</td>
+      <td style="text-align:center;">无</td>
+      <td style="text-align:center;">Q/K/V 各一个 ShortConv</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout callout-ascend">
+<strong>理解到这里</strong>：你已经知道了一个 Transformer/GDN Block 的完整结构。
+后续课程将深入 <code>GatedDeltaNet</code> 层的<strong>内部</strong>——
+那才是 GDN 的核心，也是你需要在昇腾上实现的部分。
+</div>
+
+<h2>完整的 GDN Block 代码</h2>
+
+<pre><code>class GDNBlock(nn.Module):
+    def __init__(self, hidden_size, num_heads, head_dim):
+        super().__init__()
+        self.attn_norm = RMSNorm(hidden_size)
+        self.attn = GatedDeltaNet(
+            hidden_size=hidden_size,
+            num_heads=num_heads,
+            head_dim=head_dim,
+        )
+        self.mlp_norm = RMSNorm(hidden_size)
+        self.mlp = SwiGLU(hidden_size, hidden_size * 4)
+
+    def forward(self, x):
+        # 与标准 Transformer Block 完全相同的结构!
+        x = x + self.attn(self.attn_norm(x))
+        x = x + self.mlp(self.mlp_norm(x))
+        return x</code></pre>
+
+<h2>混合架构：GDN + 注意力</h2>
+
+<p>GDN 论文发现，纯 GDN 模型不如<strong>混合架构</strong>——大部分层用 GDN，
+少量层用标准注意力。例如一个 24 层模型可能：</p>
+
+<pre><code># 层 0-17: GDN (高效, 线性复杂度)
+# 层 18-19: 滑动窗口注意力 (精确检索局部信息)
+# 层 20-23: GDN
+#
+# GDN 负责长距离信息压缩, 注意力负责精确检索
+# 兼顾效率和性能</code></pre>
+
+<p>这也是 Qwen3-Next 采用的策略——GDN 层 + 少量注意力层的混合。</p>
+
+<h2>测验</h2>
+
+<div class="quiz" id="quiz1">
+  <div class="quiz-question">问题 1：多头注意力中，head_dim × num_heads 等于什么？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">序列长度</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">层数</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">隐藏维度 hidden_size</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">词表大小</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz2">
+  <div class="quiz-question">问题 2：Pre-Norm Transformer Block 的残差连接公式是？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">x = norm(x + attn(x))</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">x = x + attn(norm(x))</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">x = attn(norm(x)) + norm(x)</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">x = norm(x) + attn(x)</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz3">
+  <div class="quiz-question">问题 3：GDN Block 与标准 Transformer Block 的唯一结构差异是？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">GDN 不使用残差连接</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">GDN 不使用 MLP 层</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">注意力层被替换为 GatedDeltaNet 层（外加短卷积）</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">GDN 使用 LayerNorm 而非 RMSNorm</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<script>
+function checkAnswer(el, correct) {
+  const quiz = el.closest('.quiz');
+  const options = quiz.querySelectorAll('.quiz-option');
+  const feedback = quiz.querySelector('.quiz-feedback');
+  options.forEach(o => o.classList.remove('correct', 'incorrect'));
+  if (correct) {
+    el.classList.add('correct');
+    feedback.className = 'quiz-feedback show correct';
+    feedback.textContent = '✓ 正确！';
+  } else {
+    el.classList.add('incorrect');
+    feedback.className = 'quiz-feedback show incorrect';
+    feedback.textContent = '✗ 再想想。';
+  }
+}
+</script>
+
+<div class="lesson-nav">
+  <a href="0004-self-attention.html">← 第4课：自注意力机制</a>
+  <a href="0006-linear-attention-basics.html">第6课：从 Softmax 注意力到线性注意力 →</a>
+</div>
+
+<div class="ask-prompt">
+  <strong>有疑问？</strong> 随时提问！比如："为什么 GDN 的 K 和 V 维度可以不同？" 或 "SwiGLU 相比普通 FFN 有什么优势？"
+  <br><br>
+  <strong>补充基础课程到此结束！</strong> 下一课（第6课）将进入 GDN 主线——从线性注意力开始。
+</div>
+
+</body>
+</html>

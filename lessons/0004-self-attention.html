@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>第4课：自注意力机制</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}]});"></script>
+</head>
+<body>
+
+<div class="lesson-meta">
+  <strong>第 4 课</strong> · 补充基础 · Gated Delta Networks 系列<br>
+  <a href="../MISSION.md">使命</a> ·
+  <a href="../RESOURCES.md">资源</a> ·
+  <a href="../GLOSSARY.md">术语表</a>
+</div>
+
+<h1>自注意力机制</h1>
+
+<p>Gated DeltaNet 是<strong>自注意力的替代品</strong>。要理解 GDN 改进了什么，
+必须先理解标准自注意力——它的工作原理、它的瓶颈、以及推理时的 KV Cache 问题。</p>
+
+<h2>核心直觉：每个 token "看"其他 token</h2>
+
+<p>对于序列中的每个 token，自注意力计算它对其他所有 token 的"关注程度"，
+然后根据关注程度聚合信息。三个角色：</p>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.9em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;">角色</th>
+      <th style="text-align:left; padding: 0.5rem;">符号</th>
+      <th style="text-align:left; padding: 0.5rem;">比喻</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;"><strong>Query (Q)</strong></td>
+      <td style="padding: 0.5rem;">$q_t$</td>
+      <td style="padding: 0.5rem;">"我想知道什么" — 当前 token 的查询</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;"><strong>Key (K)</strong></td>
+      <td style="padding: 0.5rem;">$k_i$</td>
+      <td style="padding: 0.5rem;">"我有什么" — 其他 token 的标签</td>
+    </tr>
+    <tr>
+      <td style="padding: 0.5rem;"><strong>Value (V)</strong></td>
+      <td style="padding: 0.5rem;">$v_i$</td>
+      <td style="padding: 0.5rem;">"我的内容" — 其他 token 的信息</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>计算步骤</h2>
+
+<h3>第1步：投影</h3>
+<p>输入 $x \in \mathbb{R}^{N \times d}$ 通过三个线性层投影成 Q、K、V：</p>
+<div class="math-block">
+$$Q = x W_Q, \quad K = x W_K, \quad V = x W_V$$
+</div>
+
+<h3>第2步：计算注意力分数</h3>
+<p>每个 query 对每个 key 打分——点积越大越相关：</p>
+<div class="math-block">
+$$\text{scores} = \frac{Q K^\top}{\sqrt{d}} \in \mathbb{R}^{N \times N}$$
+</div>
+
+<p>除以 $\sqrt{d}$ 是为了防止点积过大导致 softmax 饱和。</p>
+
+<h3>第3步：Softmax 归一化</h3>
+<p>把分数变成概率（和为1）：</p>
+<div class="math-block">
+$$A = \text{softmax}(\text{scores}) \in \mathbb{R}^{N \times N}$$
+</div>
+
+<h3>第4步：加权聚合</h3>
+<div class="math-block">
+$$O = A V \in \mathbb{R}^{N \times d}$$
+</div>
+
+<p>合在一起就是：</p>
+<div class="math-block">
+$$\text{Attention}(Q, K, V) = \text{softmax}\!\left(\frac{QK^\top}{\sqrt{d}}\right) V$$
+</div>
+
+<h2>因果掩码：生成式模型的关键</h2>
+
+<p>语言模型生成文本时，每个 token 只能看到<strong>它之前的 token</strong>（不能偷看未来）。
+这通过"因果掩码"实现——把上三角的注意力分数设为 $-\infty$：</p>
+
+<div class="demo">
+  <div class="demo-controls">
+    <button class="demo-btn active" onclick="maskDemo(false)">无掩码 (双向)</button>
+    <button class="demo-btn" onclick="maskDemo(true)">因果掩码 (单向)</button>
+  </div>
+  <div class="demo-output" id="maskOutput"></div>
+</div>
+
+<script>
+function maskDemo(causal) {
+  const labels = ['我', '爱', '深', '度', '学', '习'];
+  const scores = [
+    [9, 3, 1, 0, 2, 1],
+    [2, 8, 4, 3, 1, 2],
+    [1, 3, 9, 5, 4, 2],
+    [0, 2, 4, 8, 3, 3],
+    [1, 1, 3, 2, 9, 5],
+    [0, 1, 2, 3, 4, 8],
+  ];
+  let lines = [];
+  lines.push("注意力矩阵 (行=query, 列=key):");
+  lines.push("      " + labels.map(l => l.padStart(3)).join(" "));
+  for (let i = 0; i < 6; i++) {
+    let row = labels[i].padStart(3) + "  ";
+    for (let j = 0; j < 6; j++) {
+      if (causal && j > i) {
+        row += "  -∞";
+      } else {
+        row += scores[i][j].toString().padStart(3) + " ";
+      }
+    }
+    lines.push(row);
+  }
+  if (causal) {
+    lines.push("");
+    lines.push("→ 上三角被掩码: '深' 看不到 '度','学','习'");
+    lines.push("→ 每个 token 只关注自己和之前的 token");
+  }
+  document.getElementById('maskOutput').textContent = lines.join("\n");
+}
+maskDemo(false);
+</script>
+
+<h2>O(N²) 瓶颈：为什么需要替代方案</h2>
+
+<p>注意力矩阵 $A \in \mathbb{R}^{N \times N}$ 是瓶颈的根源：</p>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.9em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;">序列长度 N</th>
+      <th style="text-align:center; padding: 0.5rem;">注意力矩阵大小</th>
+      <th style="text-align:center; padding: 0.5rem;">显存 (float16)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">2,048</td>
+      <td style="text-align:center;">4M 元素</td>
+      <td style="text-align:center;">~8 MB</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">32,768</td>
+      <td style="text-align:center;">1B 元素</td>
+      <td style="text-align:center;">~2 GB</td>
+    </tr>
+    <tr>
+      <td style="padding: 0.5rem;">131,072</td>
+      <td style="text-align:center;">16B 元素</td>
+      <td style="text-align:center;">~32 GB</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout callout-warning">
+<strong>这就是 GDN 要解决的问题</strong>：用固定大小的<strong>状态矩阵</strong>（与 N 无关）
+替代不断增长的注意力矩阵。代价是失去 softmax 的精确检索能力——GDN 通过门控和 delta 规则来弥补。
+</div>
+
+<h2>KV Cache：推理时的另一个问题</h2>
+
+<p>推理（生成）时，每生成一个新 token，需要计算它与所有历史 token 的注意力。
+标准做法是缓存历史 K 和 V（KV Cache），避免重复计算：</p>
+
+<pre><code># 生成第 N 个 token 时:
+# 已经缓存了 k_1..k_{N-1}, v_1..v_{N-1}
+# 新 token 产生 k_N, v_N
+
+# 把新的加入缓存
+k_cache.append(k_N)  # 缓存长度不断增长!
+v_cache.append(v_N)
+
+# 计算注意力（需要遍历所有历史）
+scores = q_N @ k_cache.T   # O(N) 操作
+attn = softmax(scores)
+o_N = attn @ v_cache       # O(N) 操作</code></pre>
+
+<div class="callout callout-insight">
+<strong>KV Cache 的代价</strong>：缓存大小 = $O(N \times d)$，随序列长度线性增长。
+在长上下文场景下，KV Cache 的显存占用甚至超过模型本身。
+GDN 用固定大小 $O(d^2)$ 的状态矩阵替代——这正是下一课（线性注意力）的主题。
+</div>
+
+<h2>PyTorch 实现：完整代码</h2>
+
+<pre><code>import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from einops import rearrange
+
+class SelfAttention(nn.Module):
+    def __init__(self, hidden_size, num_heads):
+        super().__init__()
+        self.num_heads = num_heads
+        self.head_dim = hidden_size // num_heads
+        self.scale = self.head_dim ** -0.5
+
+        self.q_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.k_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.v_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.o_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+
+    def forward(self, x):
+        B, T, C = x.shape  # batch, seq_len, hidden
+
+        # 1. 投影
+        q = self.q_proj(x)  # [B, T, C]
+        k = self.k_proj(x)
+        v = self.v_proj(x)
+
+        # 2. 拆成多头
+        q = rearrange(q, 'b t (h d) -> b h t d', h=self.num_heads)
+        k = rearrange(k, 'b t (h d) -> b h t d', h=self.num_heads)
+        v = rearrange(v, 'b t (h d) -> b h t d', h=self.num_heads)
+
+        # 3. 计算注意力分数
+        scores = torch.einsum('bhtd,bhsd->bhts', q, k) * self.scale
+        # scores: [B, H, T, T]
+
+        # 4. 因果掩码
+        mask = torch.triu(torch.ones(T, T, dtype=torch.bool), diagonal=1)
+        scores = scores.masked_fill(mask, float('-inf'))
+
+        # 5. Softmax + 加权
+        attn = F.softmax(scores, dim=-1)
+        o = torch.einsum('bhts,bhsd->bhtd', attn, v)
+
+        # 6. 合并头 + 输出投影
+        o = rearrange(o, 'b h t d -> b t (h d)')
+        return self.o_proj(o)</code></pre>
+
+<div class="callout callout-ascend">
+<strong>对比 GDN</strong>：GDN 的层结构<strong>几乎完全一样</strong>——也有 q_proj/k_proj/v_proj/o_proj 和多头拆分。
+唯一不同的是第3-5步（注意力计算）被替换为 <code>chunk_gated_delta_rule(q, k, v, ...)</code>。
+理解了这个结构，GDN 的层代码你就能读懂 80%。
+</div>
+
+<h2>测验</h2>
+
+<div class="quiz" id="quiz1">
+  <div class="quiz-question">问题 1：注意力公式中除以 √d 的目的是什么？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">减少参数量</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">防止点积过大导致 softmax 饱和</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">加速矩阵乘法</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">实现因果掩码</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz2">
+  <div class="quiz-question">问题 2：因果掩码的作用是什么？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">减少计算量</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">防止过拟合</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">让每个 token 只能看到它之前的 token</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">对注意力分数做归一化</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz3">
+  <div class="quiz-question">问题 3：KV Cache 的主要问题是什么？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">计算太慢</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">显存随序列长度线性增长 O(N×d)</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">精度不够</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">无法并行化</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<script>
+function checkAnswer(el, correct) {
+  const quiz = el.closest('.quiz');
+  const options = quiz.querySelectorAll('.quiz-option');
+  const feedback = quiz.querySelector('.quiz-feedback');
+  options.forEach(o => o.classList.remove('correct', 'incorrect'));
+  if (correct) {
+    el.classList.add('correct');
+    feedback.className = 'quiz-feedback show correct';
+    feedback.textContent = '✓ 正确！';
+  } else {
+    el.classList.add('incorrect');
+    feedback.className = 'quiz-feedback show incorrect';
+    feedback.textContent = '✗ 再想想。';
+  }
+}
+</script>
+
+<div class="lesson-nav">
+  <a href="0003-pytorch-basics.html">← 第3课：PyTorch 核心</a>
+  <a href="0005-transformer-block.html">第5课：多头注意力与 Transformer Block →</a>
+</div>
+
+<div class="ask-prompt">
+  <strong>有疑问？</strong> 随时提问！比如："为什么用点积而不是欧氏距离？" 或 "head_dim 怎么确定？"
+</div>
+
+</body>
+</html>

@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>第1课：神经网络基础</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}]});"></script>
+</head>
+<body>
+
+<div class="lesson-meta">
+  <strong>第 1 课</strong> · 补充基础 · Gated Delta Networks 系列<br>
+  <a href="../MISSION.md">使命</a> ·
+  <a href="../RESOURCES.md">资源</a> ·
+  <a href="../GLOSSARY.md">术语表</a>
+</div>
+
+<h1>神经网络基础</h1>
+
+<p>这一课介绍构成 GDN 的基本组件：线性层、激活函数、归一化、残差连接。
+这些是所有现代深度学习模型的积木，GDN 的每一层都用到它们。</p>
+
+<h2>线性层：最基本的变换</h2>
+
+<p>线性层（也叫全连接层）做一件事：<strong>矩阵乘法加偏置</strong>。</p>
+
+<div class="math-block">
+$$y = Wx + b$$
+</div>
+
+<p>其中 $x \in \mathbb{R}^{d_{in}}$ 是输入，$W \in \mathbb{R}^{d_{out} \times d_{in}}$ 是权重，
+$b \in \mathbb{R}^{d_{out}}$ 是偏置，$y \in \mathbb{R}^{d_{out}}$ 是输出。</p>
+
+<p>在 GDN 代码中你会看到大量线性层：</p>
+
+<pre><code>self.q_proj = nn.Linear(hidden_size, key_dim, bias=False)   # 投影出 Q
+self.k_proj = nn.Linear(hidden_size, key_dim, bias=False)   # 投影出 K
+self.v_proj = nn.Linear(hidden_size, value_dim, bias=False)  # 投影出 V</code></pre>
+
+<div class="callout callout-insight">
+<strong>关键直觉</strong>：线性层就是"用一个矩阵把一个向量从一种表示空间变换到另一种表示空间"。
+Transformer 和 GDN 都先把输入投影成 Q/K/V 三个不同的表示，再在这些表示上做注意力计算。
+</div>
+
+<h2>激活函数：引入非线性</h2>
+
+<p>只有线性层的网络，无论堆叠多少层，整体仍是线性的。激活函数引入非线性，使网络能学习复杂模式。</p>
+
+<h3>ReLU（最经典）</h3>
+<div class="math-block">
+$$\text{ReLU}(x) = \max(0, x)$$
+</div>
+<p>简单、高效，但负数输入完全被丢弃。</p>
+
+<h3>SiLU / Swish（GDN 使用）</h3>
+<div class="math-block">
+$$\text{SiLU}(x) = x \cdot \sigma(x) = \frac{x}{1 + e^{-x}}$$
+</div>
+<p>SiLU 是 $x$ 和 sigmoid 的乘积——负数输入被"压低"而非完全丢弃。
+现代模型（Llama、GDN）普遍使用 SiLU。</p>
+
+<div class="demo">
+  <div class="demo-controls">
+    <button class="demo-btn active" onclick="switchActivation('relu')">ReLU</button>
+    <button class="demo-btn" onclick="switchActivation('silu')">SiLU (GDN用)</button>
+    <button class="demo-btn" onclick="switchActivation('gelu')">GELU</button>
+  </div>
+  <svg width="100%" height="200" viewBox="0 0 400 200" id="actPlot" style="background: var(--code-bg); border-radius: 6px;">
+    <line x1="20" y1="100" x2="380" y2="100" stroke="#999" stroke-width="1"/>
+    <line x1="200" y1="20" x2="200" y2="180" stroke="#999" stroke-width="1"/>
+    <polyline id="actLine" fill="none" stroke="var(--accent)" stroke-width="2"/>
+    <text x="370" y="115" font-size="11" fill="#666">x</text>
+    <text x="205" y="25" font-size="11" fill="#666">y</text>
+  </svg>
+</div>
+
+<script>
+function relu(x) { return Math.max(0, x); }
+function silu(x) { return x / (1 + Math.exp(-x)); }
+function gelu(x) { return 0.5 * x * (1 + Math.tanh(Math.sqrt(2/Math.PI) * (x + 0.044715 * x**3))); }
+
+function switchActivation(type) {
+  document.querySelectorAll('.demo-btn').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+  const fn = type === 'relu' ? relu : type === 'silu' ? silu : gelu;
+  let points = [];
+  for (let px = 20; px <= 380; px++) {
+    let x = (px - 200) / 30; // map pixel to x value [-6, 6]
+    let y = fn(x);
+    let py = 100 - y * 15;
+    py = Math.max(20, Math.min(180, py));
+    points.push(px + "," + py);
+  }
+  document.getElementById('actLine').setAttribute('points', points.join(' '));
+}
+// Init
+switchActivation('silu');
+</script>
+
+<h2>归一化：稳定训练</h2>
+
+<p>归一化层把激活值拉回合理范围，防止数值爆炸或消失。GDN 使用两种归一化：</p>
+
+<h3>LayerNorm</h3>
+<p>对每个样本的<strong>所有特征维度</strong>做归一化：</p>
+<div class="math-block">
+$$\text{LayerNorm}(x) = \gamma \cdot \frac{x - \mu}{\sqrt{\sigma^2 + \epsilon}} + \beta$$
+</div>
+<p>其中 $\mu, \sigma^2$ 是 $x$ 各维度的均值和方差，$\gamma, \beta$ 是可学习参数。</p>
+
+<h3>RMSNorm（GDN 使用）</h3>
+<p>LayerNorm 的简化版——<strong>不减均值</strong>，只用均方根归一化：</p>
+<div class="math-block">
+$$\text{RMSNorm}(x) = \gamma \cdot \frac{x}{\sqrt{\frac{1}{d}\sum_{i} x_i^2 + \epsilon}}$$
+</div>
+
+<div class="callout callout-ascend">
+<strong>为什么 GDN 用 RMSNorm？</strong>
+<ul style="margin-top: 0.4rem; padding-left: 1.2rem;">
+  <li>计算更快（不需要算均值）</li>
+  <li>实践中效果与 LayerNorm 相当</li>
+  <li>在 GDN kernel 中，RMSNorm 常与门控融合在一起（<code>FusedRMSNormGated</code>）</li>
+</ul>
+</div>
+
+<h2>残差连接：让深层网络可训练</h2>
+
+<p>残差连接（Residual Connection）简单但关键：</p>
+
+<div class="math-block">
+$$y = x + f(x)$$
+</div>
+
+<p>输出 = 输入 + 子层输出。梯度可以直接通过 $+x$ 流回，避免深层网络的梯度消失。</p>
+
+<pre><code># GDN 中的残差结构（伪代码）
+h = hidden_states
+o = attention_layer(h)   # 或 GDN layer
+h = h + o                 # 残差连接
+o = mlp_layer(h)
+h = h + o                 # 又一个残差
+</code></pre>
+
+<h2>Pre-Norm vs Post-Norm</h2>
+
+<p>归一化放在残差连接的<strong>之前</strong>还是<strong>之后</strong>，影响很大：</p>
+
+<pre><code># Pre-Norm (GDN/现代模型用)
+h = hidden_states + attention(norm1(hidden_states))
+h = h + mlp(norm2(h))
+
+# Post-Norm (原始 Transformer)
+h = norm1(hidden_states + attention(hidden_states))
+h = norm2(h + mlp(h))</code></pre>
+
+<p>Pre-Norm 更容易训练深层模型，是现代标准。</p>
+
+<h2>把积木拼起来：一个 Transformer/GDN Block 的结构</h2>
+
+<p>有了以上组件，一个完整的 block 长这样：</p>
+
+<pre><code>def block(x):
+    # 子层1: 归一化 + 注意力/GDN + 残差
+    h = x + gdn_layer(rmsnorm(x))
+
+    # 子层2: 归一化 + MLP + 残差
+    out = h + mlp(rmsnorm(h))
+    return out</code></pre>
+
+<div class="callout callout-insight">
+<strong>本课要点</strong>：GDN 的"新东西"只是把 <code>gdn_layer(...)</code> 内部的注意力换成 gated delta rule。
+其余部分（线性投影、SiLU、RMSNorm、残差、MLP）都和标准 Transformer 完全一样。
+所以理解 GDN = 理解那个 <code>gdn_layer</code> 内部做了什么。
+</div>
+
+<h2>测验</h2>
+
+<div class="quiz" id="quiz1">
+  <div class="quiz-question">问题 1：SiLU(x) 的公式是什么？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">max(0, x)</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">x · σ(x) = x / (1 + e^(-x))</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">x²</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">tanh(x)</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz2">
+  <div class="quiz-question">问题 2：RMSNorm 与 LayerNorm 的主要区别是？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">RMSNorm 不使用可学习参数 γ</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">RMSNorm 不减去均值，只用均方根归一化</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">RMSNorm 只对部分维度归一化</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">RMSNorm 使用 sigmoid 而非线性归一化</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz3">
+  <div class="quiz-question">问题 3：Pre-Norm 残差连接的公式是？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">h = norm(x + f(x))</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">h = x + f(norm(x))</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">h = norm(x) + f(x)</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">h = norm(f(x + norm(x)))</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<script>
+function checkAnswer(el, correct) {
+  const quiz = el.closest('.quiz');
+  const options = quiz.querySelectorAll('.quiz-option');
+  const feedback = quiz.querySelector('.quiz-feedback');
+  options.forEach(o => o.classList.remove('correct', 'incorrect'));
+  if (correct) {
+    el.classList.add('correct');
+    feedback.className = 'quiz-feedback show correct';
+    feedback.textContent = '✓ 正确！';
+  } else {
+    el.classList.add('incorrect');
+    feedback.className = 'quiz-feedback show incorrect';
+    feedback.textContent = '✗ 再想想。';
+  }
+}
+</script>
+
+<div class="lesson-nav">
+  <span>（这是第一课）</span>
+  <a href="0002-backpropagation.html">第2课：反向传播与梯度下降 →</a>
+</div>
+
+<div class="ask-prompt">
+  <strong>有疑问？</strong> 随时提问！比如："为什么残差连接能防止梯度消失？" 或 "SiLU 相比 ReLU 有什么优势？"
+</div>
+
+</body>
+</html>

@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>第6课：从 Softmax 注意力到线性注意力</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}]});"></script>
+</head>
+<body>
+
+<div class="lesson-meta">
+  <strong>第 6 课</strong> · Gated Delta Networks 系列<br>
+  <a href="../MISSION.html">使命</a> ·
+  <a href="../RESOURCES.md">资源</a> ·
+  <a href="../GLOSSARY.md">术语表</a>
+</div>
+
+<h1>从 Softmax 注意力到线性注意力</h1>
+
+<p>在理解 Gated Delta Networks 之前，我们需要先理解它的根基：<strong>线性注意力</strong>。
+GDN 本质上是对线性注意力记忆机制的一种改进。这一课我们从你熟悉的 Softmax 注意力出发，
+理解线性注意力是什么、为什么需要它，以及它如何引出"记忆状态"的概念。</p>
+
+<h2>Softmax 注意力：O(N²) 的瓶颈</h2>
+
+<p>标准 Transformer 的注意力计算如下：</p>
+
+<div class="math-block">
+$$\text{Attn}(Q, K, V) = \text{softmax}\!\left(\frac{Q K^\top}{\sqrt{d}}\right) V$$
+</div>
+
+<p>其中 $Q, K, V \in \mathbb{R}^{N \times d}$，$N$ 是序列长度。关键问题在于
+$Q K^\top$ 产生一个 $N \times N$ 的矩阵，因此复杂度是 $O(N^2 d)$。
+当 $N$ 很大时（比如 32K、128K），这成为训练和推理的主要瓶颈。</p>
+
+<div class="callout callout-warning">
+<strong>核心矛盾</strong>：Softmax 使得 $Q$ 和 $K$ 之间形成非线性耦合，
+无法将 $\text{softmax}(QK^\top)V$ 分解为 $Q$ 和 $(K, V)$ 的独立计算。
+</div>
+
+<h2>关键观察：去掉 Softmax 会怎样？</h2>
+
+<p>如果我们把 softmax 换成一个<strong>可分解的特征映射</strong> $\phi(\cdot)$，
+即把 $\text{softmax}(q \cdot k)$ 替换为 $\phi(q) \cdot \phi(k)$，
+那么注意力就变成了：</p>
+
+<div class="math-block">
+$$o_t = \sum_{i=1}^{t} \phi(q_t) \cdot \phi(k_i) \cdot v_i = \phi(q_t) \cdot \left(\sum_{i=1}^{t} \phi(k_i) \otimes v_i\right)$$
+</div>
+
+<p>注意括号里的部分 $\sum_{i=1}^{t} \phi(k_i) \otimes v_i$ <strong>不依赖于 $q_t$</strong>！
+这意味着我们可以把它提取出来，定义一个<strong>状态矩阵</strong>：</p>
+
+<div class="math-block">
+$$S_t = \sum_{i=1}^{t} \phi(k_i) \otimes v_i$$
+</div>
+
+<p>这样输出就变成了简单的矩阵-向量乘法：</p>
+
+<div class="math-block">
+$$o_t = \phi(q_t) \cdot S_t$$
+</div>
+
+<h2>递归形式：O(1) 推理的秘密</h2>
+
+<p>状态矩阵 $S_t$ 有一个优美的递归关系：</p>
+
+<div class="math-block">
+$$S_t = S_{t-1} + \phi(k_t) \otimes v_t$$
+</div>
+
+<p>也就是说，每来一个新 token，我们只需要做一次外积累加就能更新状态，
+然后一次矩阵-向量乘法就能得到输出。<strong>推理时每步的计算量是 $O(d^2)$，
+与序列长度 $N$ 无关！</strong></p>
+
+<div class="callout callout-insight">
+<strong>核心直觉</strong>：线性注意力把"看所有历史 token"这件事，压缩成了一个固定大小的
+<strong>状态矩阵 $S$</strong>。$S$ 就是一个"记忆"——用 $k$ 写入，用 $q$ 读取。
+GDN 要改进的，正是这个记忆的更新方式。
+</div>
+
+<h2>对比总结</h2>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.9em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;"></th>
+      <th style="text-align:center; padding: 0.5rem;">Softmax 注意力</th>
+      <th style="text-align:center; padding: 0.5rem;">线性注意力</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">注意力分数</td>
+      <td style="text-align:center;">$\text{softmax}(qk^\top)$</td>
+      <td style="text-align:center;">$\phi(q)\phi(k)^\top$</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">训练复杂度</td>
+      <td style="text-align:center;">$O(N^2 d)$</td>
+      <td style="text-align:center;">$O(N d^2)$</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">推理（逐步）</td>
+      <td style="text-align:center;">$O(N d)$ (需缓存所有 KV)</td>
+      <td style="text-align:center;">$O(d^2)$ (固定大小状态)</td>
+    </tr>
+    <tr>
+      <td style="padding: 0.5rem;">记忆形式</td>
+      <td style="text-align:center;">KV Cache (显式)</td>
+      <td style="text-align:center;">状态矩阵 $S$ (压缩)</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>交互演示：观察状态矩阵的构建</h2>
+
+<p>点击下面的按钮，观察一个简单的线性注意力如何逐步处理序列。
+状态矩阵 $S$ 从零开始，每步通过 $S \mathrel{+}= k \otimes v$ 累积信息。</p>
+
+<div class="demo">
+  <div class="demo-controls">
+    <button class="demo-btn" onclick="stepDemo(0)">重置</button>
+    <button class="demo-btn" onclick="stepDemo(1)">下一步 →</button>
+    <button class="demo-btn" onclick="stepDemo(2)">运行全部</button>
+  </div>
+  <div class="demo-output" id="demoOutput">点击"下一步"开始演示</div>
+</div>
+
+<script>
+// Simple 2D demo: k and v are 2-dim vectors, S is 2x2 matrix
+const seq = [
+  { k: [1, 0], v: [2, 1], q: [1, 1] },
+  { k: [0, 1], v: [1, 3], q: [1, 0] },
+  { k: [1, 1], v: [0, 2], q: [0, 1] },
+  { k: [1, 0], v: [3, 0], q: [1, 1] },
+];
+
+let demoStep = 0;
+let S = [[0,0],[0,0]];
+
+function fmtVec(v) { return "[" + v.map(x => x.toFixed(1)).join(", ") + "]"; }
+function fmtMat(m) {
+  return m.map(r => "  [" + r.map(x => x.toFixed(1).padStart(5)).join(", ") + "]").join("\n");
+}
+function dot(a, b) { return a[0]*b[0] + a[1]*b[1]; }
+function outer(v, k) { return [[v[0]*k[0], v[0]*k[1]], [v[1]*k[0], v[1]*k[1]]]; }
+function matVec(m, v) { return [m[0][0]*v[0]+m[0][1]*v[1], m[1][0]*v[0]+m[1][1]*v[1]]; }
+
+function renderDemo() {
+  if (demoStep === 0) {
+    document.getElementById('demoOutput').textContent =
+      "初始状态:\n" +
+      "  S = [[0.0, 0.0],\n" +
+      "       [0.0, 0.0]]\n\n" +
+      "等待处理 4 个 token...";
+    return;
+  }
+  let lines = [];
+  for (let i = 0; i < demoStep; i++) {
+    const tok = seq[i];
+    // Update S
+    const ov = outer(tok.v, tok.k);
+    S[0][0] += ov[0][0]; S[0][1] += ov[0][1];
+    S[1][0] += ov[1][0]; S[1][1] += ov[1][1];
+    // Compute output
+    const o = matVec(S, tok.q);
+    lines.push("=== 步骤 " + (i+1) + " ===");
+    lines.push("  k = " + fmtVec(tok.k) + ",  v = " + fmtVec(tok.v) + ",  q = " + fmtVec(tok.q));
+    lines.push("  k ⊗ v = [[" + ov[0][0].toFixed(1) + ", " + ov[0][1].toFixed(1) + "], [" + ov[1][0].toFixed(1) + ", " + ov[1][1].toFixed(1) + "]]");
+    lines.push("  S (更新后) =");
+    lines.push(fmtMat(S));
+    lines.push("  o = q · S = " + fmtVec(o));
+    lines.push("");
+  }
+  document.getElementById('demoOutput').textContent = lines.join("\n");
+}
+
+function stepDemo(action) {
+  if (action === 0) { demoStep = 0; S = [[0,0],[0,0]]; renderDemo(); }
+  else if (action === 1) { if (demoStep < seq.length) { demoStep++; renderDemo(); } }
+  else if (action === 2) {
+    demoStep = 0; S = [[0,0],[0,0]];
+    let interval = setInterval(() => {
+      demoStep++;
+      renderDemo();
+      if (demoStep >= seq.length) clearInterval(interval);
+    }, 800);
+  }
+}
+</script>
+
+<h2>问题：这个记忆有什么缺陷？</h2>
+
+<p>注意上面的更新规则 $S_t = S_{t-1} + k_t \otimes v_t$ ——它只能<strong>累加</strong>。
+这意味着：</p>
+
+<ul style="margin-bottom: 1rem; padding-left: 1.5rem;">
+  <li><strong>无法遗忘</strong>：旧信息永远不会被丢弃，$S$ 会不断膨胀，噪声累积</li>
+  <li><strong>无法修正</strong>：如果之前写入的信息有误，无法更新或覆盖</li>
+  <li><strong>检索精度差</strong>：在长序列上，$S$ 中混入了太多信息，query 难以精确检索</li>
+</ul>
+
+<div class="callout callout-ascend">
+<strong>这正是 GDN 要解决的</strong>。后续课程将介绍两个改进方向：
+<ul style="margin-top: 0.5rem; padding-left: 1.2rem;">
+  <li><strong>门控</strong>（第3课）：让记忆能遗忘旧信息</li>
+  <li><strong>Delta 规则</strong>（第4课）：让记忆能精确修正</li>
+  <li><strong>Gated Delta 规则</strong>（第5课）：两者结合 = GDN</li>
+</ul>
+</div>
+
+<h2>测验</h2>
+
+<div class="quiz" id="quiz1">
+  <div class="quiz-question">问题 1：线性注意力将复杂度从 O(N²) 降为 O(N) 的关键是什么？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">使用了更小的隐藏维度 d</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">用可分解的特征映射 φ 替换了 softmax，使 QK^T 可被提取</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">使用了稀疏注意力掩码</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">减少了注意力头的数量</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz2">
+  <div class="quiz-question">问题 2：线性注意力的状态矩阵 S_t 的递归更新公式是？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">S_t = S_{t-1} · k_t + v_t</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">S_t = softmax(S_{t-1}) + k_t ⊗ v_t</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">S_t = S_{t-1} + k_t ⊗ v_t</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">S_t = k_t ⊗ v_t</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz3">
+  <div class="quiz-question">问题 3：原始线性注意力的状态矩阵 S 有什么主要缺陷？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">维度太大，内存不够</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">计算速度太慢</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">只能累加，无法遗忘旧信息或修正错误信息</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">无法并行化训练</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<script>
+function checkAnswer(el, correct) {
+  const quiz = el.closest('.quiz');
+  const options = quiz.querySelectorAll('.quiz-option');
+  const feedback = quiz.querySelector('.quiz-feedback');
+
+  options.forEach(o => { o.classList.remove('correct', 'incorrect'); });
+
+  if (correct) {
+    el.classList.add('correct');
+    feedback.className = 'quiz-feedback show correct';
+    feedback.textContent = '✓ 正确！' + getCorrectFeedback(quiz.id);
+  } else {
+    el.classList.add('incorrect');
+    feedback.className = 'quiz-feedback show incorrect';
+    feedback.textContent = '✗ 不对。再想想——关键在于 softmax 的非线性耦合 vs 特征映射的可分解性。';
+  }
+}
+
+function getCorrectFeedback(quizId) {
+  const feedbacks = {
+    'quiz1': 'softmax 不可分解，而 φ(q)·φ(k) 可以把求和提取出来，变成独立于 q 的状态矩阵。',
+    'quiz2': '每次只需加上外积 k⊗v，这是最简单的加法更新。GDN 将在此基础上引入门控和 delta 修正。',
+    'quiz3': '这正是 GDN 要解决的核心问题——后续课程会逐步引入门控(遗忘)和 delta 规则(修正)。'
+  };
+  return feedbacks[quizId] || '';
+}
+</script>
+
+<div class="lesson-nav">
+  <span><a href="0005-transformer-block.html">← 第5课：多头注意力与 Transformer Block</a></span>
+  <a href="0002-associative-memory.html">第2课：关联记忆视角 →</a>
+</div>
+
+<div class="ask-prompt">
+  <strong>有疑问？</strong> 随时向我提问！无论是这一课的内容，还是对后续课程的期待，
+  我都可以为你解答。比如："φ(·) 具体是什么函数？" 或 "为什么外积 k⊗v 是矩阵？"
+</div>
+
+</body>
+</html>

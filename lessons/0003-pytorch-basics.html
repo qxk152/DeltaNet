@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>第3课：PyTorch 核心</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}]});"></script>
+</head>
+<body>
+
+<div class="lesson-meta">
+  <strong>第 3 课</strong> · 补充基础 · Gated Delta Networks 系列<br>
+  <a href="../MISSION.md">使命</a> ·
+  <a href="../RESOURCES.md">资源</a> ·
+  <a href="../GLOSSARY.md">术语表</a>
+</div>
+
+<h1>PyTorch 核心</h1>
+
+<p>GDN 的参考实现用 PyTorch 编写。你需要理解 Tensor、autograd、nn.Module 和 einsum——
+这些是读懂 GDN 代码、编写验证脚本的必备工具。</p>
+
+<h2>Tensor：多维数组</h2>
+
+<p>Tensor 是 PyTorch 的基本数据结构，本质是带<strong>设备</strong>和<strong>梯度</strong>追踪的多维数组。</p>
+
+<pre><code>import torch
+
+# 创建 tensor
+x = torch.randn(32, 128, 512)  # [batch, seq_len, hidden_size]
+
+# 关键属性
+x.shape    # torch.Size([32, 128, 512]) — 形状
+x.dtype    # torch.float32 — 数据类型
+x.device   # device(type='cpu') — 在哪个设备上
+
+# 常用操作
+y = x @ x.transpose(-1, -2)  # 矩阵乘法
+z = x.reshape(32, 128, 16, 32)  # 改形状
+w = x.transpose(1, 2)  # 交换维度</code></pre>
+
+<div class="callout callout-ascend">
+<strong>GDN 中的 tensor 形状约定</strong>：
+<ul style="margin-top: 0.4rem; padding-left: 1.2rem;">
+  <li><code>q, k</code>: <code>[B, T, H, K]</code> — batch, seq_len, num_heads, head_dim</li>
+  <li><code>v</code>: <code>[B, T, H, V]</code> — V 可以不等于 K</li>
+  <li><code>beta, g</code>: <code>[B, T, H]</code> — 每个头一个标量</li>
+  <li><code>state S</code>: <code>[B, H, K, V]</code> — 每个头一个矩阵</li>
+</ul>
+记住这个形状约定，后面看代码会轻松很多。
+</div>
+
+<h2>Autograd：自动求导</h2>
+
+<p>PyTorch 的 autograd 自动追踪 tensor 上的操作，构建计算图，并在调用 <code>backward()</code> 时自动做反向传播。</p>
+
+<pre><code>import torch
+
+# 需要 requires_grad=True 才会追踪梯度
+W = torch.randn(4, 3, requires_grad=True)
+x = torch.randn(2, 4)
+y = torch.randn(2, 3)
+
+# 前向传播（autograd 自动记录操作）
+z = x @ W           # 矩阵乘法
+loss = ((z - y) ** 2).mean()
+
+# 反向传播（自动！）
+loss.backward()
+
+# 梯度在 W.grad 中
+print(W.grad)       # shape [4, 3]，与 W 同形状
+# tensor([[ 0.12, -0.05,  0.33],
+#         [-0.08,  0.21, -0.14],
+#         [ 0.45,  0.02, -0.27],
+#         [-0.11,  0.09,  0.18]])</code></pre>
+
+<div class="callout callout-warning">
+<strong>autograd 的局限</strong>：它只能对 PyTorch <strong>内置操作</strong>自动求导。
+GDN 的核心 kernel <code>chunk_gated_delta_rule</code> 是一个自定义操作，
+PyTorch 不知道内部做了什么。所以 GDN 的 kernel 必须<strong>手动实现前向和反向</strong>，
+通过 <code>torch.autograd.Function</code> 注册。
+</div>
+
+<h2>nn.Module：层和模型的基类</h2>
+
+<p>所有神经网络层都继承 <code>nn.Module</code>。你需要知道三件事：</p>
+
+<pre><code>import torch.nn as nn
+
+class MyLayer(nn.Module):
+    def __init__(self, hidden_size):
+        super().__init__()
+        # 1. 在 __init__ 中定义参数和子模块
+        self.proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.norm = nn.RMSNorm(hidden_size)
+
+    def forward(self, x):
+        # 2. 在 forward 中定义前向计算
+        return self.norm(self.proj(x))
+
+# 3. 参数自动注册，优化器可以找到它们
+layer = MyLayer(512)
+optimizer = torch.optim.Adam(layer.parameters(), lr=1e-4)</code></pre>
+
+<p>GDN 的层定义正是这个结构，看真实代码片段：</p>
+
+<pre><code>class GatedDeltaNet(nn.Module):
+    def __init__(self, hidden_size=2048, ...):
+        super().__init__()
+        self.q_proj = nn.Linear(hidden_size, key_dim, bias=False)
+        self.k_proj = nn.Linear(hidden_size, key_dim, bias=False)
+        self.v_proj = nn.Linear(hidden_size, value_dim, bias=False)
+        # ... 更多参数
+
+    def forward(self, hidden_states):
+        q = self.q_proj(hidden_states)  # 投影
+        k = self.k_proj(hidden_states)
+        v = self.v_proj(hidden_states)
+        # ... 核心计算
+        return o</code></pre>
+
+<h2>einsum：用公式做矩阵运算</h2>
+
+<p><code>torch.einsum</code> 用<strong>下标公式</strong>表示矩阵运算，比 <code>@</code> 和 <code>bmm</code> 更直观。
+GDN 代码中大量使用，必须能读懂。</p>
+
+<h3>基本语法</h3>
+
+<pre><code># 矩阵乘法: C = A @ B
+C = torch.einsum('ij,jk->ik', A, B)
+
+# 转置: B = A^T
+B = torch.einsum('ij->ji', A)
+
+# 内积: c = a · b
+c = torch.einsum('i,i->', a, b)
+
+# 外积: M = a ⊗ b (产生矩阵!)
+M = torch.einsum('i,j->ij', a, b)</code></pre>
+
+<div class="callout callout-insight">
+<strong>外积的 einsum 表示</strong>：GDN 的状态更新是 <code>S += k ⊗ v</code>，
+在 einsum 中就是 <code>'k,v->kv'</code>。这就是你需要在昇腾上实现的核心操作之一。
+</div>
+
+<h3>带批量和多头的 einsum（GDN 实际使用）</h3>
+
+<pre><code># GDN naive 实现中的核心计算:
+# q: [B, H, K], S: [B, H, K, V] → o: [B, H, V]
+o = torch.einsum('bhd,bhdm->bhm', b_q, h)
+#  ^^^         ^^^^^^^^^^   ^^^^
+#  q的维度      S的维度       输出维度
+# b=batch, h=head, d=key_dim, m=value_dim
+
+# 状态更新: h += k ⊗ v
+# k: [B, H, K], v: [B, H, V] → h: [B, H, K, V]
+h = h + torch.einsum('bhd,bhm->bhdm', b_k, b_v)</code></pre>
+
+<h3>einsum 速查表</h3>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.88em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;">操作</th>
+      <th style="text-align:left; padding: 0.5rem;">einsum</th>
+      <th style="text-align:left; padding: 0.5rem;">等价代码</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.4rem;">矩阵乘法</td>
+      <td style="padding: 0.4rem;"><code>'ij,jk->ik'</code></td>
+      <td style="padding: 0.4rem;"><code>A @ B</code></td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.4rem;">外积</td>
+      <td style="padding: 0.4rem;"><code>'i,j->ij'</code></td>
+      <td style="padding: 0.4rem;"><code>a.unsqueeze(1) * b.unsqueeze(0)</code></td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.4rem;">批量矩阵乘</td>
+      <td style="padding: 0.4rem;"><code>'bhd,bhdm->bhm'</code></td>
+      <td style="padding: 0.4rem;"><code>(A @ B).diagonal(...)</code></td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.4rem;">转置</td>
+      <td style="padding: 0.4rem;"><code>'ij->ji'</code></td>
+      <td style="padding: 0.4rem;"><code>A.T</code></td>
+    </tr>
+    <tr>
+      <td style="padding: 0.4rem;">逐元素乘</td>
+      <td style="padding: 0.4rem;"><code>'ij,ij->ij'</code></td>
+      <td style="padding: 0.4rem;"><code>A * B</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>rearrange：einops 的维度变换</h2>
+
+<p>GDN 代码大量使用 <code>einops.rearrange</code>，它是 <code>reshape + transpose</code> 的人类可读版本：</p>
+
+<pre><code>from einops import rearrange
+
+# 把最后一维拆成 (heads, head_dim)
+# [B, T, hidden] → [B, T, H, D]
+q = rearrange(q, '... (h d) -> ... h d', h=num_heads)
+#                        ^^^^^^    ^^^^
+#                        合并的维  拆成两个
+
+# 反过来合并
+# [B, T, H, D] → [B, T, hidden]
+o = rearrange(o, 'b t h d -> b t (h d)')</code></pre>
+
+<div class="callout callout-insight">
+<strong>einops 规则</strong>：左边描述输入形状，右边描述输出形状。
+<code>...</code> 匹配任意不关心的维度。<code>(h d)</code> 表示两个维度被合并，拆分时指定其中一个的大小。
+</div>
+
+<h2>综合：读懂 GDN naive 代码</h2>
+
+<p>现在你已经有了所有工具。试着读这段 GDN 的参考实现（来自 <code>fla/ops/gated_delta_rule/naive.py</code>）：</p>
+
+<pre><code>def naive_recurrent_gated_delta_rule(q, k, v, beta, g, scale=None, initial_state=None):
+    # q: [B, T, H, K],  k: [B, T, H, K],  v: [B, T, H, V]
+    # beta: [B, T, H],  g: [B, T, H]
+    q, k, v, beta, g = map(
+        lambda x: x.transpose(1, 2).contiguous().to(torch.float32),
+        [q, k, v, beta, g]
+    )  # → [B, H, T, K] 格式，方便循环
+
+    B, H, T, K = k.shape
+    V = v.shape[-1]
+    h = torch.zeros(B, H, K, V)  # 状态矩阵 S
+
+    for i in range(T):
+        b_q = q[:, :, i]     # [B, H, K]
+        b_k = k[:, :, i]     # [B, H, K]
+        b_v = v[:, :, i]     # [B, H, V]
+
+        # 1. 门控：旧状态乘以衰减因子
+        h = h * g[:, :, i].exp()[..., None, None]
+
+        # 2. Delta 规则：计算修正值
+        b_v = b_v - (h * b_k[..., None]).sum(-2)
+
+        # 3. 用 beta 缩放修正值
+        b_v = b_v * beta[:, :, i][..., None]
+
+        # 4. 写入状态
+        h = h + b_k.unsqueeze(-1) * b_v.unsqueeze(-2)  # 外积!
+
+        # 5. 读取输出
+        o[:, :, i] = torch.einsum('bhd,bhdm->bhm', b_q, h)
+
+    return o, h</code></pre>
+
+<div class="callout callout-ascend">
+<strong>你能读懂多少？</strong> 如果大部分能看懂，说明你准备好了。
+重点关注：
+<ul style="margin-top: 0.4rem; padding-left: 1.2rem;">
+  <li><code>h * g[..., None, None]</code> — 门控（第3课会详细讲）</li>
+  <li><code>(h * b_k[..., None]).sum(-2)</code> — 用 k 查询当前状态</li>
+  <li><code>b_k.unsqueeze(-1) * b_v.unsqueeze(-2)</code> — 外积 k⊗v</li>
+  <li><code>einsum('bhd,bhdm->bhm', b_q, h)</code> — 用 q 读取状态</li>
+</ul>
+这些操作的具体含义在后续 GDN 课程中会逐一展开。
+</div>
+
+<h2>测验</h2>
+
+<div class="quiz" id="quiz1">
+  <div class="quiz-question">问题 1：einsum 'i,j->ij' 表示什么操作？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">内积</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">外积</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">矩阵乘法</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">逐元素乘</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz2">
+  <div class="quiz-question">问题 2：rearrange 'b t (h d) -> b t h d' 做了什么？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">把 h 和 d 合并成一维</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">把最后一维拆分成 h 和 d 两个维度</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">转置 b 和 t 维度</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">删除 h 维度</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz3">
+  <div class="quiz-question">问题 3：为什么 GDN kernel 不能用 autograd 自动求导？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">因为 GDN 使用 float32</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">因为 einsum 不支持自动求导</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">因为 kernel 是自定义操作，PyTorch 不知道内部计算步骤</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">因为 GDN 的梯度不存在</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<script>
+function checkAnswer(el, correct) {
+  const quiz = el.closest('.quiz');
+  const options = quiz.querySelectorAll('.quiz-option');
+  const feedback = quiz.querySelector('.quiz-feedback');
+  options.forEach(o => o.classList.remove('correct', 'incorrect'));
+  if (correct) {
+    el.classList.add('correct');
+    feedback.className = 'quiz-feedback show correct';
+    feedback.textContent = '✓ 正确！';
+  } else {
+    el.classList.add('incorrect');
+    feedback.className = 'quiz-feedback show incorrect';
+    feedback.textContent = '✗ 再想想。';
+  }
+}
+</script>
+
+<div class="lesson-nav">
+  <a href="0002-backpropagation.html">← 第2课：反向传播</a>
+  <a href="0004-self-attention.html">第4课：自注意力机制 →</a>
+</div>
+
+<div class="ask-prompt">
+  <strong>有疑问？</strong> 随时提问！比如："einsum 中省略号 ... 代表什么？" 或 "contiguous() 为什么需要调用？"
+</div>
+
+</body>
+</html>
