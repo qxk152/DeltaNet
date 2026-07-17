@@ -95,6 +95,47 @@ blockquote {
   overflow-x: auto;
 }
 
+/* Site logo */
+.site-logo {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.5rem;
+}
+
+.site-logo svg {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+}
+
+.site-logo-text {
+  font-family: var(--sans);
+  font-size: 0.75rem;
+  color: var(--muted);
+  line-height: 1.3;
+}
+
+.site-logo-text strong {
+  font-size: 0.9rem;
+  color: var(--fg);
+}
+
+/* Home link in lesson meta */
+.home-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  margin-bottom: 0.3rem;
+  font-family: var(--sans);
+  font-size: 0.8rem;
+}
+
+.home-link svg {
+  width: 14px;
+  height: 14px;
+}
+
 /* Lesson metadata */
 .lesson-meta {
   font-family: var(--sans);
