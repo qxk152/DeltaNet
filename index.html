@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gated Delta Networks 教学课程</title>
+  <link rel="stylesheet" href="assets/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+</head>
+<body style="max-width: 760px;">
+
+<div class="lesson-meta">
+  <strong>Gated Delta Networks 系列</strong> · 从零到昇腾算子实现<br>
+  <a href="MISSION.md">使命</a> ·
+  <a href="RESOURCES.md">资源</a> ·
+  <a href="GLOSSARY.md">术语表</a>
+</div>
+
+<h1>Gated Delta Networks 教学课程</h1>
+
+<p>从零开始，逐步理解 Gated Delta Networks（GDN）的数学原理和实现细节，
+最终目标是在华为昇腾（Ascend）NPU 上实现 GDN 算子。</p>
+
+<h2>补充基础（第 1–5 课）</h2>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.95em;">
+  <tr style="border-bottom: 1px solid var(--border);">
+    <td style="padding: 0.6rem; width: 3rem;"><strong>1</strong></td>
+    <td style="padding: 0.6rem;"><a href="lessons/0001-neural-network-basics.html">神经网络基础</a><br><small>线性层、激活函数(SiLU)、RMSNorm、残差连接</small></td>
+  </tr>
+  <tr style="border-bottom: 1px solid var(--border);">
+    <td style="padding: 0.6rem;"><strong>2</strong></td>
+    <td style="padding: 0.6rem;"><a href="lessons/0002-backpropagation.html">反向传播与梯度下降</a><br><small>链式法则、矩阵运算梯度、为什么 kernel 需要手写反向</small></td>
+  </tr>
+  <tr style="border-bottom: 1px solid var(--border);">
+    <td style="padding: 0.6rem;"><strong>3</strong></td>
+    <td style="padding: 0.6rem;"><a href="lessons/0003-pytorch-basics.html">PyTorch 核心</a><br><small>Tensor、autograd、nn.Module、einsum、einops</small></td>
+  </tr>
+  <tr style="border-bottom: 1px solid var(--border);">
+    <td style="padding: 0.6rem;"><strong>4</strong></td>
+    <td style="padding: 0.6rem;"><a href="lessons/0004-self-attention.html">自注意力机制</a><br><small>Q/K/V、softmax、因果掩码、KV Cache、O(N²) 瓶颈</small></td>
+  </tr>
+  <tr style="border-bottom: 1px solid var(--border);">
+    <td style="padding: 0.6rem;"><strong>5</strong></td>
+    <td style="padding: 0.6rem;"><a href="lessons/0005-transformer-block.html">多头注意力与 Transformer Block</a><br><small>完整 block 结构、GDN Block 对比</small></td>
+  </tr>
+</table>
+
+<h2>GDN 主线（第 6 课起）</h2>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.95em;">
+  <tr style="border-bottom: 1px solid var(--border);">
+    <td style="padding: 0.6rem; width: 3rem;"><strong>6</strong></td>
+    <td style="padding: 0.6rem;"><a href="lessons/0006-linear-attention-basics.html">从 Softmax 注意力到线性注意力</a><br><small>状态矩阵 S、递归形式、O(N²)→O(N) 的关键洞察</small></td>
+  </tr>
+  <tr style="border-bottom: 1px solid var(--border); opacity: 0.5;">
+    <td style="padding: 0.6rem;"><strong>7</strong></td>
+    <td style="padding: 0.6rem;">关联记忆视角 <small>（待创建）</small></td>
+  </tr>
+  <tr style="border-bottom: 1px solid var(--border); opacity: 0.5;">
+    <td style="padding: 0.6rem;"><strong>8</strong></td>
+    <td style="padding: 0.6rem;">门控机制：GLA / Mamba2 <small>（待创建）</small></td>
+  </tr>
+  <tr style="border-bottom: 1px solid var(--border); opacity: 0.5;">
+    <td style="padding: 0.6rem;"><strong>9</strong></td>
+    <td style="padding: 0.6rem;">Delta 规则：DeltaNet <small>（待创建）</small></td>
+  </tr>
+  <tr style="border-bottom: 1px solid var(--border); opacity: 0.5;">
+    <td style="padding: 0.6rem;"><strong>10</strong></td>
+    <td style="padding: 0.6rem;">Gated Delta 规则：GDN 核心 <small>（待创建）</small></td>
+  </tr>
+  <tr style="border-bottom: 1px solid var(--border); opacity: 0.5;">
+    <td style="padding: 0.6rem;"><strong>11</strong></td>
+    <td style="padding: 0.6rem;">分块并行算法 <small>（待创建）</small></td>
+  </tr>
+  <tr style="border-bottom: 1px solid var(--border); opacity: 0.5;">
+    <td style="padding: 0.6rem;"><strong>12</strong></td>
+    <td style="padding: 0.6rem;">Triton Kernel 实现解析 <small>（待创建）</small></td>
+  </tr>
+  <tr style="opacity: 0.5;">
+    <td style="padding: 0.6rem;"><strong>13</strong></td>
+    <td style="padding: 0.6rem;">昇腾 CANN 算子移植 <small>（待创建）</small></td>
+  </tr>
+</table>
+
+<h2>关于本课程</h2>
+
+<p>本教学课程围绕论文
+<a href="https://arxiv.org/abs/2412.06464">"Gated Delta Networks: Improving Mamba2 with Delta Rule"</a>
+（Yang, Kautz, Hatamizadeh, ICLR 2025）设计，
+目标是帮助开发者从零理解 GDN 并在昇腾硬件上实现算子。</p>
+
+<p>参考实现来自
+<a href="https://github.com/fla-org/flash-linear-attention">flash-linear-attention</a> 库。</p>
+
+</body>
+</html>
