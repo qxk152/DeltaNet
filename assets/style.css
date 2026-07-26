@@ -367,13 +367,11 @@ blockquote {
   left: 258px;
 }
 
-/* 桌面端：目录展开时把正文往右推 */
+/* 桌面端：目录展开时把正文往右推并居中 */
 @media (min-width: 1101px) {
   body.toc-shifted {
     margin-left: 250px;
-  }
-  .toc-toggle {
-    display: none;
+    margin-right: auto;
   }
   .toc-sidebar {
     transform: translateX(0);
@@ -382,9 +380,6 @@ blockquote {
 
 /* 移动端：抽屉式 */
 @media (max-width: 1100px) {
-  .toc-toggle {
-    display: flex;
-  }
   .toc-sidebar {
     box-shadow: 4px 0 16px rgba(0,0,0,0.15);
   }

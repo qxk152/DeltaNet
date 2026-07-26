@@ -69,11 +69,17 @@
       setOpen(!sidebar.classList.contains('open'));
     });
 
-    /* 桌面默认展开，移动默认收起 */
+    /* 首次加载：桌面默认展开，移动默认收起 */
     setOpen(window.innerWidth > 1100);
 
+    /* 跨断点切换时重置为该断点的默认状态 */
+    var wasDesktop = window.innerWidth > 1100;
     window.addEventListener('resize', function () {
-      setOpen(window.innerWidth > 1100);
+      var isDesktop = window.innerWidth > 1100;
+      if (isDesktop !== wasDesktop) {
+        setOpen(isDesktop);
+        wasDesktop = isDesktop;
+      }
     });
   }
 

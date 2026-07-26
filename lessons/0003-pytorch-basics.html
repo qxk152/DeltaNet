@@ -28,7 +28,7 @@
 <p>GDN 的参考实现用 PyTorch 编写。你需要理解 Tensor、autograd、nn.Module 和 einsum——
 这些是读懂 GDN 代码、编写验证脚本的必备工具。</p>
 
-<h2>Tensor：多维数组</h2>
+<h2>3.1 Tensor：多维数组</h2>
 
 <p>Tensor 是 PyTorch 的基本数据结构，本质是带<strong>设备</strong>和<strong>梯度</strong>追踪的多维数组。</p>
 
@@ -58,7 +58,7 @@ w = x.transpose(1, 2)  # 交换维度</code></pre>
 记住这个形状约定，后面看代码会轻松很多。
 </div>
 
-<h2>Autograd：自动求导</h2>
+<h2>3.2 Autograd：自动求导</h2>
 
 <p>PyTorch 的 autograd 自动追踪 tensor 上的操作，构建计算图，并在调用 <code>backward()</code> 时自动做反向传播。</p>
 
@@ -90,7 +90,7 @@ PyTorch 不知道内部做了什么。所以 GDN 的 kernel 必须<strong>手动
 通过 <code>torch.autograd.Function</code> 注册。
 </div>
 
-<h2>nn.Module：层和模型的基类</h2>
+<h2>3.3 nn.Module：层和模型的基类</h2>
 
 <p>所有神经网络层都继承 <code>nn.Module</code>。你需要知道三件事：</p>
 
@@ -128,12 +128,12 @@ optimizer = torch.optim.Adam(layer.parameters(), lr=1e-4)</code></pre>
         # ... 核心计算
         return o</code></pre>
 
-<h2>einsum：用公式做矩阵运算</h2>
+<h2>3.4 einsum：用公式做矩阵运算</h2>
 
 <p><code>torch.einsum</code> 用<strong>下标公式</strong>表示矩阵运算，比 <code>@</code> 和 <code>bmm</code> 更直观。
 GDN 代码中大量使用，必须能读懂。</p>
 
-<h3>基本语法</h3>
+<h3>3.4.1 基本语法</h3>
 
 <pre><code># 矩阵乘法: C = A @ B
 C = torch.einsum('ij,jk->ik', A, B)
@@ -152,7 +152,7 @@ M = torch.einsum('i,j->ij', a, b)</code></pre>
 在 einsum 中就是 <code>'k,v->kv'</code>。这就是你需要在昇腾上实现的核心操作之一。
 </div>
 
-<h3>带批量和多头的 einsum（GDN 实际使用）</h3>
+<h3>3.4.2 带批量和多头的 einsum（GDN 实际使用）</h3>
 
 <pre><code># GDN naive 实现中的核心计算:
 # q: [B, H, K], S: [B, H, K, V] → o: [B, H, V]
@@ -165,7 +165,7 @@ o = torch.einsum('bhd,bhdm->bhm', b_q, h)
 # k: [B, H, K], v: [B, H, V] → h: [B, H, K, V]
 h = h + torch.einsum('bhd,bhm->bhdm', b_k, b_v)</code></pre>
 
-<h3>einsum 速查表</h3>
+<h3>3.4.3 einsum 速查表</h3>
 
 <table style="width:100%; border-collapse: collapse; font-size: 0.88em; margin: 1rem 0;">
   <thead>
@@ -204,7 +204,7 @@ h = h + torch.einsum('bhd,bhm->bhdm', b_k, b_v)</code></pre>
   </tbody>
 </table>
 
-<h2>rearrange：einops 的维度变换</h2>
+<h2>3.5 rearrange：einops 的维度变换</h2>
 
 <p>GDN 代码大量使用 <code>einops.rearrange</code>，它是 <code>reshape + transpose</code> 的人类可读版本：</p>
 
@@ -225,7 +225,7 @@ o = rearrange(o, 'b t h d -> b t (h d)')</code></pre>
 <code>...</code> 匹配任意不关心的维度。<code>(h d)</code> 表示两个维度被合并，拆分时指定其中一个的大小。
 </div>
 
-<h2>综合：读懂 GDN naive 代码</h2>
+<h2>3.6 综合：读懂 GDN naive 代码</h2>
 
 <p>现在你已经有了所有工具。试着读这段 GDN 的参考实现（来自 <code>fla/ops/gated_delta_rule/naive.py</code>）：</p>
 

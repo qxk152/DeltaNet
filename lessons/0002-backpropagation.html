@@ -29,7 +29,7 @@
 <strong>自定义 kernel 需要手写反向传播</strong>，PyTorch 的 autograd 帮不了你。
 这一课从零理解反向传播的工作原理。</p>
 
-<h2>梯度下降：从山顶下山</h2>
+<h2>2.1 梯度下降：从山顶下山</h2>
 
 <p>训练神经网络 = 找到一组参数（权重 $W$）使损失 $L$ 最小。梯度下降的做法：</p>
 
@@ -45,7 +45,7 @@ $$W \leftarrow W - \eta \cdot \frac{\partial L}{\partial W}$$
 损失是经过无数次变换才得到的，直接求导不可能。这就是<strong>反向传播</strong>要解决的。
 </div>
 
-<h2>前向传播：构建计算图</h2>
+<h2>2.2 前向传播：构建计算图</h2>
 
 <p>考虑一个简单的两层网络：</p>
 
@@ -60,7 +60,7 @@ $$L = \text{loss}(z_2, y)$$
 
 <pre><code>x → [W₁] → z₁ → [σ] → a₁ → [W₂] → z₂ → [loss] → L</code></pre>
 
-<h2>链式法则：反向传播的数学基础</h2>
+<h2>2.3 链式法则：反向传播的数学基础</h2>
 
 <p>链式法则说：如果 $L$ 依赖于 $z_2$，$z_2$ 依赖于 $W_2$，那么：</p>
 
@@ -84,7 +84,7 @@ $$\frac{\partial L}{\partial W_1} = \frac{\partial L}{\partial z_2} \cdot \frac{
 两者相乘，就得到传给上一层的梯度。
 </div>
 
-<h2>交互演示：反向传播逐步计算</h2>
+<h2>2.4 交互演示：反向传播逐步计算</h2>
 
 <div class="demo">
   <div class="demo-controls">
@@ -131,7 +131,7 @@ function bpDemo(action) {
 }
 </script>
 
-<h2>为什么自定义 Kernel 需要手写反向？</h2>
+<h2>2.5 为什么自定义 Kernel 需要手写反向？</h2>
 
 <p>PyTorch 的 autograd 能自动对标准操作（矩阵乘法、加法等）做反向传播。
 但当你写了一个<strong>自定义 CUDA/Triton kernel</strong>时：</p>
@@ -155,7 +155,7 @@ GDN 的 <code>chunk_gated_delta_rule</code> kernel 包含复杂的递归状态�
 这就是为什么理解反向传播对你至关重要。
 </div>
 
-<h2>矩阵运算的梯度：最常用的公式</h2>
+<h2>2.6 矩阵运算的梯度：最常用的公式</h2>
 
 <p>以下是你在 GDN kernel 反向传播中会反复用到的核心公式：</p>
 

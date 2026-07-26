@@ -29,7 +29,7 @@
 GDN 本质上是对线性注意力记忆机制的一种改进。这一课我们从你熟悉的 Softmax 注意力出发，
 理解线性注意力是什么、为什么需要它，以及它如何引出"记忆状态"的概念。</p>
 
-<h2>Softmax 注意力：O(N²) 的瓶颈</h2>
+<h2>5.1 Softmax 注意力：O(N²) 的瓶颈</h2>
 
 <p>标准 Transformer 的注意力计算如下：</p>
 
@@ -46,7 +46,7 @@ $Q K^\top$ 产生一个 $N \times N$ 的矩阵，因此复杂度是 $O(N^2 d)$�
 无法将 $\text{softmax}(QK^\top)V$ 分解为 $Q$ 和 $(K, V)$ 的独立计算。
 </div>
 
-<h2>关键观察：去掉 Softmax 会怎样？</h2>
+<h2>5.2 关键观察：去掉 Softmax 会怎样？</h2>
 
 <p>如果我们把 softmax 换成一个<strong>可分解的特征映射</strong> $\phi(\cdot)$，
 即把 $\text{softmax}(q \cdot k)$ 替换为 $\phi(q) \cdot \phi(k)$，
@@ -69,7 +69,7 @@ $$S_t = \sum_{i=1}^{t} \phi(k_i) \otimes v_i$$
 $$o_t = \phi(q_t) \cdot S_t$$
 </div>
 
-<h2>递归形式：O(1) 推理的秘密</h2>
+<h2>5.3 递归形式：O(1) 推理的秘密</h2>
 
 <p>状态矩阵 $S_t$ 有一个优美的递归关系：</p>
 
@@ -87,7 +87,7 @@ $$S_t = S_{t-1} + \phi(k_t) \otimes v_t$$
 GDN 要改进的，正是这个记忆的更新方式。
 </div>
 
-<h2>对比总结</h2>
+<h2>5.4 对比总结</h2>
 
 <table style="width:100%; border-collapse: collapse; font-size: 0.9em; margin: 1rem 0;">
   <thead>
@@ -121,7 +121,7 @@ GDN 要改进的，正是这个记忆的更新方式。
   </tbody>
 </table>
 
-<h2>交互演示：观察状态矩阵的构建</h2>
+<h2>5.5 交互演示：观察状态矩阵的构建</h2>
 
 <p>点击下面的按钮，观察一个简单的线性注意力如何逐步处理序列。
 状态矩阵 $S$ 从零开始，每步通过 $S \mathrel{+}= k \otimes v$ 累积信息。</p>
@@ -198,7 +198,7 @@ function stepDemo(action) {
 }
 </script>
 
-<h2>问题：这个记忆有什么缺陷？</h2>
+<h2>5.6 问题：这个记忆有什么缺陷？</h2>
 
 <p>注意上面的更新规则 $S_t = S_{t-1} + k_t \otimes v_t$ ——它只能<strong>累加</strong>。
 这意味着：</p>
