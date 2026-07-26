@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>第0课：神经网络从零理解</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Crect x='2' y='2' width='44' height='44' rx='8' fill='%23fef0ea' stroke='%23c1440e' stroke-width='2'/%3E%3Cpath d='M24 10 L36 34 L12 34 Z' fill='none' stroke='%23c1440e' stroke-width='3' stroke-linejoin='round'/%3E%3Ccircle cx='24' cy='34' r='2.5' fill='%23c1440e'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}]});"></script>
+</head>
+<body>
+
+<a href="../index.html" class="home-link">← 返回首页</a>
+
+<div class="lesson-meta">
+  <strong>第 0 课</strong> · 预备知识 · Gated Delta Networks 系列<br>
+  <a href="../MISSION.md">使命</a> ·
+  <a href="../RESOURCES.md">资源</a> ·
+  <a href="../GLOSSARY.md">术语表</a>
+</div>
+
+<h1>神经网络：从零理解</h1>
+
+<p>这一课面向<strong>完全没有接触过神经网络和深度学习</strong>的读者。我们只回答两个问题：
+神经网络由哪些部分组成？每个部分起什么作用？目标只有一个——让你在进入后续课程、
+读到 GDN 代码时，知道每个东西"是什么、为什么在那里"。</p>
+
+<div class="callout callout-insight">
+<strong>一句话定义</strong>：神经网络就是一个<strong>靠数据调出来的函数</strong> $f(x) \to y$。
+你给它输入 $x$，它产出输出 $y$；所谓"学习"，就是不断调整它内部的一堆数字（参数），
+让输出越来越接近正确答案。
+</div>
+
+<h2>最小的单元：神经元 (Neuron)</h2>
+
+<p>神经网络的最小零件是<strong>神经元</strong>。它做的事可以用一句话讲完：
+把若干输入加权求和，再加一个偏置，最后过一个激活函数。</p>
+
+<div class="math-block">
+$$y = \text{激活}(w_1 x_1 + w_2 x_2 + \cdots + w_n x_n + b)$$
+</div>
+
+<p>展开看每个部分的角色：</p>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.9em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;">部分</th>
+      <th style="text-align:left; padding: 0.5rem;">作用</th>
+      <th style="text-align:left; padding: 0.5rem;">为什么需要它</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;"><strong>输入 $x_i$</strong></td>
+      <td style="padding: 0.5rem;">喂给神经元的信号（数据的一个特征）</td>
+      <td style="padding: 0.5rem;">网络要处理的东西，没有输入就没有计算</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;"><strong>权重 $w_i$</strong></td>
+      <td style="padding: 0.5rem;">决定每个输入"有多重要"</td>
+      <td style="padding: 0.5rem;">它是<strong>可调节的</strong>——"学习"就是调它</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;"><strong>偏置 $b$</strong></td>
+      <td style="padding: 0.5rem;">一个基础平移量，控制神经元"何时开工"</td>
+      <td style="padding: 0.5rem;">没有它，函数被迫过原点，太死板</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;"><strong>求和</strong></td>
+      <td style="padding: 0.5rem;">把所有输入的影响汇总成一个数</td>
+      <td style="padding: 0.5rem;">把多维信息压缩成一个决策依据</td>
+    </tr>
+    <tr>
+      <td style="padding: 0.5rem;"><strong>激活函数</strong></td>
+      <td style="padding: 0.5rem;">引入非线性（让曲线能弯）</td>
+      <td style="padding: 0.5rem;">没有它，叠再多层也只等于一条直线</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout callout-warning">
+<strong>关键区分</strong>：<strong>权重和偏置是"参数"</strong>——它们是网络要学的数字，开始随机、训练中不断更新。
+输入和激活函数<strong>不是</strong>参数：输入来自数据，激活函数是你选定的固定函数。
+读代码时看到的 <code>nn.Linear</code>、<code>weight</code>、<code>bias</code>，指的就是这些可学参数。
+</div>
+
+<h3>动手感受：一个神经元的"旋钮"</h3>
+
+<p>下面是一个单输入神经元 $y = \text{激活}(w \cdot x + b)$。拖动权重 $w$ 和偏置 $b$，
+看看输出曲线怎么变——这正是训练在做的事：不断扭这两个旋钮，直到曲线长成你想要的样子。</p>
+
+<div class="demo">
+  <div class="demo-controls">
+    <button class="demo-btn active" onclick="setAct('relu')">ReLU</button>
+    <button class="demo-btn" onclick="setAct('silu')">SiLU (GDN用)</button>
+  </div>
+  <div style="font-family: var(--sans); font-size: 0.85rem; margin-bottom: 0.6rem;">
+    权重 w = <span id="wVal">1.0</span>
+    <input type="range" id="wSlider" min="-2" max="2" step="0.1" value="1" style="width: 180px; vertical-align: middle;">
+    &nbsp;&nbsp; 偏置 b = <span id="bVal">0.0</span>
+    <input type="range" id="bSlider" min="-4" max="4" step="0.2" value="0" style="width: 180px; vertical-align: middle;">
+  </div>
+  <svg width="100%" height="220" viewBox="0 0 400 220" id="neuronPlot" style="background: var(--code-bg); border-radius: 6px;">
+    <line x1="20" y1="110" x2="380" y2="110" stroke="#999" stroke-width="1"/>
+    <line x1="200" y1="15" x2="200" y2="205" stroke="#999" stroke-width="1"/>
+    <polyline id="neuronLine" fill="none" stroke="var(--accent)" stroke-width="2"/>
+    <text x="370" y="125" font-size="11" fill="#666">x</text>
+    <text x="205" y="22" font-size="11" fill="#666">y</text>
+  </svg>
+</div>
+
+<script>
+function nrelu(x){return Math.max(0,x);}
+function nsilu(x){return x/(1+Math.exp(-x));}
+var curAct = 'relu';
+function setAct(t){
+  curAct = t;
+  document.querySelectorAll('.demo-btn').forEach(b=>b.classList.remove('active'));
+  event.target.classList.add('active');
+  drawNeuron();
+}
+function drawNeuron(){
+  var w = parseFloat(document.getElementById('wSlider').value);
+  var b = parseFloat(document.getElementById('bSlider').value);
+  document.getElementById('wVal').textContent = w.toFixed(1);
+  document.getElementById('bVal').textContent = b.toFixed(1);
+  var fn = curAct==='relu'?nrelu:nsilu;
+  var pts=[];
+  for(var px=20; px<=380; px++){
+    var x=(px-200)/25;
+    var y=fn(w*x+b);
+    var py=110 - y*12;
+    py=Math.max(15,Math.min(205,py));
+    pts.push(px+","+py);
+  }
+  document.getElementById('neuronLine').setAttribute('points', pts.join(' '));
+}
+document.getElementById('wSlider').addEventListener('input', drawNeuron);
+document.getElementById('bSlider').addEventListener('input', drawNeuron);
+drawNeuron();
+</script>
+
+<p>试试看：把 $w$ 调成负数，曲线翻转；把 $b$ 左右拉，曲线整体平移。
+训练神经网络，本质就是在成千上万个这样的旋钮上，找到一组让总体误差最小的设置。</p>
+
+<h2>从神经元到层 (Layer)</h2>
+
+<p>一个神经元只能做一个简单的判断。真正的网络把<strong>很多神经元并排放在一起</strong>，组成一层；
+再把一层层的输出串起来，组成整个网络。</p>
+
+<ul style="margin-bottom: 1rem; padding-left: 1.5rem;">
+  <li><strong>一层</strong> = 很多神经元同时算，每个神经元有自己的权重和偏置，看同一个输入的不同方面。</li>
+  <li><strong>堆叠多层</strong> = 上一层的输出当作下一层的输入。越深，能表达的模式越复杂。</li>
+</ul>
+
+<p>把一层的计算写成矩阵形式，就是你在代码里反复见到的<strong>线性层</strong>：</p>
+
+<div class="math-block">
+$$y = Wx + b$$
+</div>
+
+<p>这里 $W$ 是把这一层所有神经元的权重排成的矩阵，$x$ 是输入向量，$b$ 是偏置向量。
+一个矩阵乘法就同时算完了整层所有神经元——这就是"层"的全部。</p>
+
+<div class="callout callout-insight">
+<strong>衔接</strong>：到这里你已经懂了"层"是什么。<a href="0001-neural-network-basics.html">第1课</a>会接着讲
+Transformer / GDN 里用到的具体层：线性层、激活函数(SiLU)、归一化(RMSNorm)、残差连接。
+它们都是本课这些基本零件的特定用法。
+</div>
+
+<h2>怎么"学习"：训练循环 (Training Loop)</h2>
+
+<p>参数（权重和偏置）一开始是随机的，网络啥也不会。"学习"就是反复走下面这个循环，
+用数据把参数一点点调对：</p>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.9em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem; width: 2.5rem;">步骤</th>
+      <th style="text-align:left; padding: 0.5rem;">名称</th>
+      <th style="text-align:left; padding: 0.5rem;">做什么</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">1</td>
+      <td style="padding: 0.5rem;"><strong>前向传播</strong></td>
+      <td style="padding: 0.5rem;">把输入从第一层喂到最后一层，得到一个预测 $\hat{y}$</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">2</td>
+      <td style="padding: 0.5rem;"><strong>算损失</strong></td>
+      <td style="padding: 0.5rem;">比较预测 $\hat{y}$ 和正确答案 $y$，得到一个误差分数（损失 $L$）</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">3</td>
+      <td style="padding: 0.5rem;"><strong>反向传播</strong></td>
+      <td style="padding: 0.5rem;">倒着算每个参数该往哪个方向调（梯度）</td>
+    </tr>
+    <tr>
+      <td style="padding: 0.5rem;">4</td>
+      <td style="padding: 0.5rem;"><strong>更新参数</strong></td>
+      <td style="padding: 0.5rem;">按梯度方向微调每个权重（梯度下降）</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>重复这四步成千上万次，损失越来越小，网络就"学会"了。</p>
+
+<h3>损失函数：学习的"标尺"</h3>
+
+<p>损失函数 $L$ 把"网络预测得有多错"打成一个数字。整个训练就是在<strong>最小化损失</strong>。</p>
+<div class="math-block">
+$$L = \text{某种距离}(\hat{y},\ y)$$
+</div>
+
+<div class="callout callout-warning">
+<strong>为什么必须有损失函数</strong>：要优化，先得有一个能打的分。没有损失函数，
+就没有"哪个方向是下坡"，训练无从谈起。后续 GDN 算子要手写反向传播，
+反向传播算的就是<strong>损失对各参数的梯度</strong>——详见<a href="0002-backpropagation.html">第2课</a>。
+</div>
+
+<h2>网络基础组成部分总览</h2>
+
+<p>把前面所有零件汇总成一张表，这就是"神经网络的组成部分及作用"：</p>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.9em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;">组成部分</th>
+      <th style="text-align:left; padding: 0.5rem;">作用</th>
+      <th style="text-align:left; padding: 0.5rem;">是参数吗</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">输入 $x$</td>
+      <td style="padding: 0.5rem;">喂给网络的数据</td>
+      <td style="padding: 0.5rem;">否（来自数据）</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">权重 $W$</td>
+      <td style="padding: 0.5rem;">决定每个输入的重要性，是层的主体</td>
+      <td style="padding: 0.5rem;"><strong>是</strong>（训练中更新）</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">偏置 $b$</td>
+      <td style="padding: 0.5rem;">基础平移，控制激活时机</td>
+      <td style="padding: 0.5rem;"><strong>是</strong>（训练中更新）</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">激活函数</td>
+      <td style="padding: 0.5rem;">引入非线性，让网络能学复杂模式</td>
+      <td style="padding: 0.5rem;">否（固定函数）</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">层（堆叠）</td>
+      <td style="padding: 0.5rem;">把神经元组织起来，逐层抽象</td>
+      <td style="padding: 0.5rem;">—</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">损失函数</td>
+      <td style="padding: 0.5rem;">衡量预测与答案的差距，训练的目标</td>
+      <td style="padding: 0.5rem;">否（你选定）</td>
+    </tr>
+    <tr>
+      <td style="padding: 0.5rem;">优化器/梯度下降</td>
+      <td style="padding: 0.5rem;">根据梯度更新参数，让损失下降</td>
+      <td style="padding: 0.5rem;">否（更新规则）</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout callout-ascend">
+<strong>记住这三点就够进下一课</strong>：
+<ol style="margin-top: 0.4rem; padding-left: 1.2rem;">
+  <li>神经网络 = 一堆<strong>参数</strong>（权重/偏置）组成的函数；"学习" = 调参数。</li>
+  <li>一层 = $Wx + b$ 再过激活函数；多层堆叠成网络。</li>
+  <li>训练 = 前向 → 算损失 → 反向算梯度 → 更新参数，循环往复。</li>
+</ol>
+读懂 GDN 代码时，看到的每个 <code>nn.Linear</code>、<code>weight</code>、<code>norm</code>、<code>loss</code>、<code>backward()</code>，
+对应的都是上面这些概念。
+</div>
+
+<h2>测验</h2>
+
+<div class="quiz" id="quiz1">
+  <div class="quiz-question">问题 1：神经元的"权重"是什么？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">喂给网络的输入数据</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">可学习的参数，决定每个输入有多重要</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">一个固定的激活函数</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">预测与答案的差距</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz2">
+  <div class="quiz-question">问题 2：为什么神经元需要激活函数？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">为了加速矩阵乘法</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">为了把损失降为零</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">引入非线性，否则堆再多层也只等价于一条直线</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">为了减少参数数量</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz3">
+  <div class="quiz-question">问题 3：训练循环的正确顺序是？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">更新参数 → 前向传播 → 算损失 → 反向传播</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">前向传播 → 算损失 → 反向传播 → 更新参数</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">算损失 → 前向传播 → 更新参数 → 反向传播</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">反向传播 → 前向传播 → 算损失 → 更新参数</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<script>
+function checkAnswer(el, correct) {
+  const quiz = el.closest('.quiz');
+  const options = quiz.querySelectorAll('.quiz-option');
+  const feedback = quiz.querySelector('.quiz-feedback');
+  options.forEach(o => o.classList.remove('correct', 'incorrect'));
+  if (correct) {
+    el.classList.add('correct');
+    feedback.className = 'quiz-feedback show correct';
+    feedback.textContent = '✓ 正确！';
+  } else {
+    el.classList.add('incorrect');
+    feedback.className = 'quiz-feedback show incorrect';
+    feedback.textContent = '✗ 再想想。';
+  }
+}
+</script>
+
+<div class="lesson-nav">
+  <span>（这是第一课）</span>
+  <a href="0001-neural-network-basics.html">第1课：神经网络基础 →</a>
+</div>
+
+<div class="ask-prompt">
+  <strong>有疑问？</strong> 随时提问！比如："为什么偏置能让网络更灵活？" 或 "层叠得越深一定越好吗？"
+</div>
+
+</body>
+</html>
