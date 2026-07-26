@@ -283,9 +283,122 @@ blockquote {
   font-size: 0.9em;
 }
 
+/* Collapsible sidebar TOC */
+.toc-sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 250px;
+  height: 100vh;
+  background: var(--code-bg);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 1.5rem 1rem 3rem;
+  font-family: var(--sans);
+  font-size: 0.82rem;
+  z-index: 100;
+  transform: translateX(-100%);
+  transition: transform 0.25s ease;
+  box-shadow: 2px 0 8px rgba(0,0,0,0.06);
+}
+
+.toc-sidebar.open {
+  transform: translateX(0);
+}
+
+.toc-title {
+  font-weight: 700;
+  font-size: 0.9rem;
+  margin-bottom: 0.8rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg);
+}
+
+.toc-list {
+  list-style: none;
+}
+
+.toc-list .toc-main {
+  margin-bottom: 0.35rem;
+}
+
+.toc-list .toc-sub {
+  margin-bottom: 0.25rem;
+  padding-left: 1.2rem;
+  font-size: 0.9em;
+  color: var(--muted);
+}
+
+.toc-list a {
+  color: var(--fg);
+  text-decoration: none;
+  display: block;
+  padding: 0.15rem 0.3rem;
+  border-radius: 4px;
+  line-height: 1.4;
+}
+
+.toc-list a:hover {
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
+.toc-toggle {
+  position: fixed;
+  top: 1rem;
+  left: 1rem;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 1.1rem;
+  z-index: 101;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+  transition: left 0.25s ease;
+}
+
+.toc-toggle.active {
+  left: 258px;
+}
+
+/* When sidebar is open on desktop, shift content right */
+@media (min-width: 1101px) {
+  .toc-sidebar.open ~ *:not(.toc-toggle) {
+    /* can't easily shift all; rely on body max-width + margin */
+  }
+  body:has(.toc-sidebar.open) {
+    margin-left: 250px;
+  }
+  .toc-toggle {
+    display: none;
+  }
+  .toc-sidebar {
+    transform: translateX(0);
+  }
+}
+
+@media (max-width: 1100px) {
+  .toc-toggle {
+    display: flex;
+  }
+  .toc-sidebar {
+    box-shadow: 4px 0 16px rgba(0,0,0,0.15);
+  }
+}
+
+@media print {
+  .toc-sidebar, .toc-toggle { display: none; }
+}
+
 /* Print */
 @media print {
-  body { font-size: 11pt; max-width: none; }
+  body { font-size: 11pt; max-width: none; margin-left: 0; }
   .quiz-option:hover { border-color: var(--border); background: none; }
   .demo-btn, .lesson-nav, .ask-prompt { display: none; }
 }
