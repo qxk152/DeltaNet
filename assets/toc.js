@@ -2,7 +2,7 @@
    扫描页面中的 h2/h3，生成侧边栏 TOC，带切换按钮。
    在每个页面引入 <script src="../assets/toc.js" defer></script> 即可。 */
 (function () {
-  document.addEventListener('DOMContentLoaded', function () {
+  function init() {
     var headings = document.querySelectorAll('h2, h3');
     if (headings.length < 2) return;
 
@@ -12,7 +12,7 @@
 
     var title = document.createElement('div');
     title.className = 'toc-title';
-    title.textContent = '目录';
+    title.textContent = '本页目录';
     sidebar.appendChild(title);
 
     var list = document.createElement('ul');
@@ -31,8 +31,12 @@
       var a = document.createElement('a');
       a.href = '#' + h.id;
       a.textContent = h.textContent;
-      a.addEventListener('click', function (e) {
-        if (window.innerWidth <= 1100) sidebar.classList.remove('open');
+      a.addEventListener('click', function () {
+        if (window.innerWidth <= 1100) {
+          sidebar.classList.remove('open');
+          toggle.classList.remove('active');
+          document.body.classList.remove('toc-shifted');
+        }
       });
       li.appendChild(a);
       list.appendChild(li);
@@ -45,19 +49,37 @@
     toggle.innerHTML = '&#9776;';
     toggle.title = '显示/隐藏目录';
 
-    document.body.appendChild(sidebar);
+    /* 插到 body 最前面，避免被正文布局影响 */
+    document.body.insertBefore(sidebar, document.body.firstChild);
     document.body.appendChild(toggle);
 
+    function setOpen(open) {
+      if (open) {
+        sidebar.classList.add('open');
+        toggle.classList.add('active');
+        document.body.classList.add('toc-shifted');
+      } else {
+        sidebar.classList.remove('open');
+        toggle.classList.remove('active');
+        document.body.classList.remove('toc-shifted');
+      }
+    }
+
     toggle.addEventListener('click', function () {
-      sidebar.classList.toggle('open');
-      toggle.classList.toggle('active');
+      setOpen(!sidebar.classList.contains('open'));
     });
 
-    if (window.innerWidth > 1100) sidebar.classList.add('open');
+    /* 桌面默认展开，移动默认收起 */
+    setOpen(window.innerWidth > 1100);
 
     window.addEventListener('resize', function () {
-      if (window.innerWidth <= 1100) sidebar.classList.remove('open');
-      else sidebar.classList.add('open');
+      setOpen(window.innerWidth > 1100);
     });
-  });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
 })();

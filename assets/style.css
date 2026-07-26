@@ -296,7 +296,7 @@ blockquote {
   padding: 1.5rem 1rem 3rem;
   font-family: var(--sans);
   font-size: 0.82rem;
-  z-index: 100;
+  z-index: 200;
   transform: translateX(-100%);
   transition: transform 0.25s ease;
   box-shadow: 2px 0 8px rgba(0,0,0,0.06);
@@ -355,7 +355,7 @@ blockquote {
   background: #fff;
   cursor: pointer;
   font-size: 1.1rem;
-  z-index: 101;
+  z-index: 201;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -367,12 +367,9 @@ blockquote {
   left: 258px;
 }
 
-/* When sidebar is open on desktop, shift content right */
+/* 桌面端：目录展开时把正文往右推 */
 @media (min-width: 1101px) {
-  .toc-sidebar.open ~ *:not(.toc-toggle) {
-    /* can't easily shift all; rely on body max-width + margin */
-  }
-  body:has(.toc-sidebar.open) {
+  body.toc-shifted {
     margin-left: 250px;
   }
   .toc-toggle {
@@ -383,6 +380,7 @@ blockquote {
   }
 }
 
+/* 移动端：抽屉式 */
 @media (max-width: 1100px) {
   .toc-toggle {
     display: flex;
@@ -394,11 +392,8 @@ blockquote {
 
 @media print {
   .toc-sidebar, .toc-toggle { display: none; }
-}
-
-/* Print */
-@media print {
-  body { font-size: 11pt; max-width: none; margin-left: 0; }
+  body { margin-left: 0 !important; }
+  body { font-size: 11pt; max-width: none; }
   .quiz-option:hover { border-color: var(--border); background: none; }
   .demo-btn, .lesson-nav, .ask-prompt { display: none; }
 }
