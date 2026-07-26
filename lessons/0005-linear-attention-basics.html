@@ -212,14 +212,74 @@ function stepDemo(action) {
   <li><strong>检索精度差</strong>：在长序列上，$S$ 中混入了太多信息，query 难以精确检索</li>
 </ul>
 
+<h3>5.6.1 为什么检索会出错？——检索误差的数学根源</h3>
+
+<p>线性注意力本质上实现了一个<strong>键值关联记忆</strong> $S = \sum_i v_i k_i^\top$。
+假设所有 key 都已归一化为单位长度，当我们尝试用某个 key $k_j$ 检索其对应的 value 时：</p>
+
+<div class="math-block">
+$$S k_j = \sum_i v_i (k_i^\top k_j) = v_j + \underbrace{\sum_{i \neq j} (k_i^\top k_j) v_i}_{\text{检索误差}}$$
+</div>
+
+<p>要使检索误差为零，需要所有 $k_i^\top k_j = 0\ (i \neq j)$，即所有 key <strong>两两正交</strong>。
+但在 $d$ 维空间里，最多只能有 $d$ 个相互正交的向量！这就解释了为什么<strong>增大 head 维度</strong>有帮助
+——它给向量空间留出更多"位置"来存放不同的键值对。</p>
+
+<div class="callout callout-warning">
+<strong>核心矛盾</strong>：序列长度 $L$ 可以远大于 $d$，但正交 key 最多只有 $d$ 个。
+当 $L \gg d$ 时，key 之间必然不正交，检索误差不可避免地累积。
+正如神经科学家 David Eagleman 所说：<em>"记忆的敌人不是时间，而是其他记忆。"</em>
+</div>
+
+<h3>5.6.2 状态扩展：为什么用矩阵状态</h3>
+
+<p>传统 RNN 的隐藏状态维度通常与输入维度同阶（$O(d)$），因为基于矩阵乘法的状态更新代价高。
+但 RNN 完全靠状态记住全部历史，<strong>状态大小往往是信息瓶颈</strong>，尤其在检索任务上。</p>
+
+<p>线性注意力的外积更新让状态扩展变得高效：状态矩阵 $S \in \mathbb{R}^{d \times d}$ 的大小是 $O(d^2)$，
+远大于传统 RNN 的 $O(d)$。Mamba2 也采用了同样的外积状态扩展策略。
+这种"用外积做大状态"的机制被证明在性能和可扩展性上都表现优异。</p>
+
+<h3>5.6.3 门控变体：让记忆学会遗忘</h3>
+
+<p>既然线性注意力只能累加、不能遗忘，研究者便给它加上<strong>门控（遗忘）机制</strong>：</p>
+<div class="math-block">
+$$S_t = G_t \odot S_{t-1} + v_t k_t^\top$$
+</div>
+<p>不同模型用不同方式参数化门控矩阵 $G_t \in \mathbb{R}^{d \times d}$：</p>
+<table style="width:100%; border-collapse: collapse; font-size: 0.9em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;">模型</th>
+      <th style="text-align:left; padding: 0.5rem;">门控结构 $G_t$</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 0.5rem;">Decaying FWP</td><td style="padding: 0.5rem;">$\beta_t \alpha_t^\top$</td></tr>
+    <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 0.5rem;">GLA</td><td style="padding: 0.5rem;">$\mathbf{1}\, \alpha_t^\top$</td></tr>
+    <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 0.5rem;">Mamba1</td><td style="padding: 0.5rem;">$\exp(-(\Delta_t \mathbf{1}^\top) \odot \exp(A))$</td></tr>
+    <tr><td style="padding: 0.5rem;">Mamba2</td><td style="padding: 0.5rem;">$\gamma_t\, \mathbf{1}\mathbf{1}^\top$</td></tr>
+  </tbody>
+</table>
+<p>门控变体（GLA、Mamba）显著缩小了与 softmax 注意力在语言建模上的差距，
+但在<strong>上下文检索</strong>和<strong>精确复制</strong>能力上仍有根本性挑战——这正是 DeltaNet 要解决的。</p>
+
 <div class="callout callout-ascend">
 <strong>这正是 GDN 要解决的</strong>。后续课程将介绍两个改进方向：
 <ul style="margin-top: 0.5rem; padding-left: 1.2rem;">
-  <li><strong>门控</strong>（第3课）：让记忆能遗忘旧信息</li>
-  <li><strong>Delta 规则</strong>（第4课）：让记忆能精确修正</li>
-  <li><strong>Gated Delta 规则</strong>（第5课）：两者结合 = GDN</li>
+  <li><strong>门控</strong>（第6课）：让记忆能遗忘旧信息</li>
+  <li><strong>Delta 规则</strong>（第7课）：让记忆能精确修正——DeltaNet 的核心</li>
+  <li><strong>Gated Delta 规则</strong>（第8课）：两者结合 = GDN</li>
 </ul>
 </div>
+
+<h2>5.7 参考链接</h2>
+<ul style="padding-left: 1.5rem;">
+  <li><a href="https://sustcsonglin.github.io/blog/2024/deltanet-1/">DeltaNet Explained (Part I) — Songlin Yang</a>（本课主要内容来源）</li>
+  <li><a href="https://arxiv.org/abs/2406.06484">Parallelizing Linear Transformers with the Delta Rule over Sequence Length (NeurIPS '24)</a></li>
+  <li><a href="https://arxiv.org/abs/2412.06464">Gated Delta Networks (ICLR '25)</a></li>
+  <li><a href="https://github.com/sustcsonglin/flash-linear-attention">flash-linear-attention 库</a></li>
+</ul>
 
 <h2>测验</h2>
 
@@ -287,7 +347,7 @@ function getCorrectFeedback(quizId) {
 
 <div class="lesson-nav">
   <span><a href="0004-transformer.html">← 第4课：Transformer</a></span>
-  <a href="0006-associative-memory.html">第6课：关联记忆视角 →</a>
+  <a href="0006-delta-net.html">第6课：DeltaNet 与 Delta 规则 →</a>
 </div>
 
 <div class="ask-prompt">

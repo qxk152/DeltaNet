@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>第6课：DeltaNet 与 Delta 规则</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E %3Crect x='2' y='2' width='44' height='44' rx='10' fill='%23fef0ea' stroke='%23c1440e' stroke-width='2'/%3E %3Cpath d='M16 22 L12 15 L21 19 Z' fill='%23c1440e'/%3E %3Cpath d='M32 22 L36 15 L27 19 Z' fill='%23c1440e'/%3E %3Ccircle cx='24' cy='30' r='11' fill='%23e8a368'/%3E %3Cellipse cx='24' cy='35' rx='7' ry='5' fill='%23fff'/%3E %3Ccircle cx='19' cy='29' r='1.8' fill='%232b2b2b'/%3E %3Ccircle cx='29' cy='29' r='1.8' fill='%232b2b2b'/%3E %3Cellipse cx='24' cy='33.5' rx='1.6' ry='1.2' fill='%232b2b2b'/%3E %3Cpath d='M24 34.5 L24 36' stroke='%232b2b2b' stroke-width='1.1' fill='none' stroke-linecap='round'/%3E %3Cpath d='M21 37.5 Q24 39.5 27 37.5' stroke='%232b2b2b' stroke-width='1.3' fill='none' stroke-linecap='round'/%3E %3Cpath d='M24 8 L34 15 L14 15 Z' fill='%232b2b2b'/%3E %3Crect x='13' y='14.5' width='22' height='2.5' fill='%232b2b2b'/%3E %3Cpath d='M24 9 L33 15' stroke='%23d4a017' stroke-width='1.4' fill='none'/%3E %3Ccircle cx='33.5' cy='15.5' r='1.4' fill='%23d4a017'/%3E %3C/svg%3E">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}]});"></script>
+  <script src="../assets/toc.js" defer></script>
+</head>
+<body>
+<div class="content-wrap">
+
+<a href="../index.html" class="home-link">← 返回首页</a>
+
+<div class="lesson-meta">
+  <strong>第 6 课</strong> · Gated Delta Networks 系列<br>
+  <a href="../MISSION.md">使命</a> ·
+  <a href="../RESOURCES.md">资源</a> ·
+  <a href="../GLOSSARY.md">术语表</a>
+</div>
+
+<h1>DeltaNet 与 Delta 规则</h1>
+
+<p>上一课我们看到线性注意力只能累加、无法修正，导致检索误差累积。<strong>DeltaNet</strong>
+用<strong>Delta 规则（误差修正规则）</strong>替换简单的加法更新，让记忆能根据"预测误差"精确修正。
+这一课我们从 Delta 规则的直觉出发，推导 DeltaNet 的更新公式，并用实验说明它为什么在上下文检索上远胜线性注意力。</p>
+
+<h2>6.1 什么是 Delta 规则？</h2>
+
+<p>Delta 规则是神经网络中一个基础的<strong>误差修正学习原则</strong>。核心思想非常简单：
+根据"我们想要的（目标）"和"我们实际得到的（预测）"之间的差值（delta）来调整参数。</p>
+
+<p>直觉上，想象教孩子瞄准靶心：偏左了就往右调，偏右了就往左调，调整幅度取决于偏离多少——
+这正是 Delta 规则的含义。</p>
+
+<div class="math-block">
+$$w \leftarrow w + \eta\, (y_{\text{target}} - y_{\text{pred}})\, x$$
+</div>
+
+<p>其中 $\eta$ 是学习率，$(y_{\text{target}} - y_{\text{pred}})$ 就是"delta"——误差。
+误差越大，调整越多；误差为零，不调整。这其实就是<strong>梯度下降</strong>在最小化
+均方误差损失时的一步更新（第2课讲过反向传播，这里是它在最简单场景下的特例）。</p>
+
+<h2>6.2 DeltaNet：把 Delta 规则用在记忆状态上</h2>
+
+<p>DeltaNet 把这个误差修正原则用在<strong>线性注意力的状态矩阵</strong>上。
+不再简单地累加外积 $v_t k_t^\top$，而是<strong>根据预测误差来更新</strong>：</p>
+
+<div class="math-block">
+$$S_t = S_{t-1} - \beta_t (S_{t-1} k_t - v_t)\, k_t^\top$$
+</div>
+
+<p>展开看每一项的对应关系，Delta 规则的平行就清晰了：</p>
+<table style="width:100%; border-collapse: collapse; font-size: 0.9em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;">Delta 规则符号</th>
+      <th style="text-align:left; padding: 0.5rem;">DeltaNet 中的含义</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 0.5rem;">学习率 $\eta$</td><td style="padding: 0.5rem;">$\beta_t \in \mathbb{R}$</td></tr>
+    <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 0.5rem;">输入 $x$</td><td style="padding: 0.5rem;">$k_t \in \mathbb{R}^d$</td></tr>
+    <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 0.5rem;">目标 $y_{\text{target}}$</td><td style="padding: 0.5rem;">$v_t \in \mathbb{R}^d$</td></tr>
+    <tr><td style="padding: 0.5rem;">当前预测 $y_{\text{pred}}$</td><td style="padding: 0.5rem;">$S_{t-1} k_t \in \mathbb{R}^d$</td></tr>
+  </tbody>
+</table>
+
+<h3>6.2.1 另一种直觉：擦除-写入视角</h3>
+
+<p>把 $S_{t-1} k_t$ 理解为"从记忆中用当前 key $k_t$ 检索出的旧值"。当我们遇到同一个 key
+对应的新 value $v_t$ 时，不是盲目覆盖，而是做一个<strong>谨慎的更新</strong>：</p>
+
+<div class="math-block">
+$$v_t^{\text{new}} = (1 - \beta_t)\, v_t^{\text{old}} + \beta_t\, v_t$$
+$$S_t = S_{t-1} - \underbrace{v_t^{\text{old}}\, k_t^\top}_{\text{擦除旧值}} + \underbrace{v_t^{\text{new}}\, k_t^\top}_{\text{写入新值}}$$
+</div>
+
+<p>其中 $v_t^{\text{old}} = S_{t-1} k_t$ 是检索出的旧值，$v_t^{\text{new}}$ 是新旧值的加权组合，
+由动态的 $\beta_t \in (0,1)$ 控制：</p>
+<ul style="margin-bottom: 1rem; padding-left: 1.5rem;">
+  <li>$\beta_t = 0$：记忆内容完全保留不动</li>
+  <li>$\beta_t = 1$：完全用新值替换旧值</li>
+</ul>
+
+<div class="callout callout-insight">
+<strong>对比线性注意力</strong>：线性注意力是 $S_t = S_{t-1} + v_t k_t^\top$，只写不擦。
+DeltaNet 是"先擦后写"，而且擦多少、写多少由 $\beta_t$ 自适应控制——这就是它能精确修正的关键。
+</div>
+
+<h2>6.3 DeltaNet 的上下文检索能力：MQAR 实验</h2>
+
+<p><strong>MQAR（Multi-Query Associative Recall）</strong>是一个衡量模型上下文关联检索能力的合成基准。
+任务规则：每个字母关联一个数字，模型要正确回忆查询序列中每个字母对应的数字。</p>
+
+<p>例如给定输入：</p>
+<pre><code>A 4 B 3 C 6 F 1 E 2 → A ? C ? F ? E ? B ?</code></pre>
+<p>箭头前是键值对，箭头后是要回忆的查询序列。正确输出为 <code>4, 6, 1, 2, 3</code>。</p>
+
+<p>传统的门控卷积和 RNN 模型在这个任务上普遍表现不佳，而 DeltaNet 展现了显著的优势——
+在最难设置下达到接近完美的表现。这一点尤其令人振奋，因为 MQAR 性能与真实语言建模中的
+"关联召回命中率"高度相关，而关联召回失败正是亚二次模型相比 softmax 注意力性能差距的主要来源。</p>
+
+<div class="callout callout-warning">
+<strong>为什么这很重要</strong>：DeltaNet 在 MQAR 上的完美表现意味着它在<strong>精确检索</strong>上
+有巨大潜力——这正是线性注意力（及其门控变体如 GLA、Mamba）的痛点。
+这激发了作者去开发 DeltaNet 的高效训练算法和 kernel 实现。
+</div>
+
+<h2>6.4 为什么 DeltaNet 比线性注意力更擅长检索？——MSE 推导</h2>
+
+<p>DeltaNet 的更新规则可以从<strong>逐步最小化均方误差（MSE）</strong>自然推导出来。
+这揭示了它擅长检索的根本原因。</p>
+
+<h3>6.4.1 DeltaNet = 对 MSE 损失做一步梯度下降</h3>
+
+<p>定义每一步的损失：希望用 $S k_t$ 预测 $v_t$，误差用 MSE 衡量：</p>
+<div class="math-block">
+$$\mathcal{L}_t(S) = \frac{1}{2} \|S k_t - v_t\|^2$$
+</div>
+
+<p>对 $S$ 做一步梯度下降（学习率 $\eta_t$）：</p>
+<div class="math-block">
+$$S_t = S_{t-1} - \eta_t\, \nabla \mathcal{L}_t(S_{t-1}) = S_{t-1} - \eta_t\, (S_{t-1} k_t - v_t)\, k_t^\top$$
+</div>
+
+<p>令 $\eta_t = \beta_t$，正是 DeltaNet 的更新规则！也就是说，<strong>DeltaNet 每一步都在
+对"当前 key 对应的预测误差"做一次梯度下降修正</strong>。</p>
+
+<h3>6.4.2 对比：线性注意力用的是线性损失</h3>
+
+<p>而原始线性注意力对应的是一个<strong>线性损失</strong>（内积），而非 MSE：</p>
+<div class="math-block">
+$$\mathcal{L}'_t(S) = -\langle S k_t,\, v_t \rangle$$
+</div>
+
+<p>对其做一步梯度下降（$\eta_t = 1$）：</p>
+<div class="math-block">
+$$S_t = S_{t-1} - \eta_t\, \nabla \mathcal{L}'_t(S_{t-1}) = S_{t-1} + v_t k_t^\top$$
+</div>
+
+<p>这正是线性注意力的加法更新！</p>
+
+<div class="callout callout-ascend">
+<strong>根本区别</strong>：线性注意力最小化的是线性内积损失（只要"大致对齐"就满意），
+而 DeltaNet 最小化的是<strong>MSE 损失</strong>——它会持续压制大误差。
+对于关联检索这种"必须精确"的任务，最小化 MSE 意味着大误差会被强力修正，
+所以 DeltaNet 在检索任务上远胜线性注意力。
+</div>
+
+<h2>6.5 与 Test-Time-Training 的联系</h2>
+
+<p>DeltaNet 的 MSE 推导揭示了一个有趣的联系：它和 <strong>Test-Time-Training (TTT)</strong> 在数学上等价。
+具体来说，DeltaNet 在两个条件下等同于 TTT-linear：(1) 去掉 layer norm 等非线性组件；
+(2) TTT 的 mini-batch 大小设为 1。</p>
+
+<p>这并非巧合——两者的核心都是"在推理时对内部状态做梯度下降来适配当前输入"。
+DeltaNet 把这个思想嵌入了递归状态更新的每一步。</p>
+
+<h2>6.6 从 DeltaNet 到 Gated DeltaNet</h2>
+
+<p>DeltaNet 解决了"精确修正"，但还有一个问题：<strong>它仍然没有遗忘机制</strong>。
+状态矩阵只会被 delta 规则修正，不会主动衰减旧信息。在长序列上，旧信息仍会累积。</p>
+
+<p><strong>Gated DeltaNet (GDN)</strong> 的思路很自然：把<strong>门控（遗忘）</strong>和
+<strong>Delta 规则（修正）</strong>结合——先对状态施加门控衰减，再用 delta 规则做精确更新。
+这就是 GDN 的核心创新，也是本课程后续的主题。</p>
+
+<div class="math-block">
+$$\text{GDN:} \quad S_t = \alpha_t\, S_{t-1} \;(\text{门控衰减}) \quad + \quad \text{Delta 规则更新}\;(\text{精确修正})$$
+</div>
+
+<h2>6.7 参考链接</h2>
+<ul style="padding-left: 1.5rem;">
+  <li><a href="https://sustcsonglin.github.io/blog/2024/deltanet-1/">DeltaNet Explained (Part I) — Songlin Yang</a>（本课主要内容来源）</li>
+  <li><a href="https://sustcsonglin.github.io/blog/2024/deltanet-2/">DeltaNet Explained (Part II) — 并行算法</a>（后续课程将基于此）</li>
+  <li><a href="https://sustcsonglin.github.io/blog/2024/deltanet-3/">DeltaNet Explained (Part III) — 神经架构</a></li>
+  <li><a href="https://arxiv.org/abs/2406.06484">Parallelizing Linear Transformers with the Delta Rule over Sequence Length (NeurIPS '24)</a></li>
+  <li><a href="https://arxiv.org/abs/2412.06464">Gated Delta Networks (ICLR '25)</a></li>
+  <li><a href="https://github.com/sustcsonglin/flash-linear-attention">flash-linear-attention 库</a></li>
+</ul>
+
+<h2>测验</h2>
+
+<div class="quiz" id="quiz1">
+  <div class="quiz-question">问题 1：Delta 规则的核心思想是什么？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">用更大的学习率加速训练</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">根据"目标值与预测值的差值"来调整参数</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">丢弃所有旧记忆只保留最新信息</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">用 softmax 归一化误差</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz2">
+  <div class="quiz-question">问题 2：DeltaNet 的更新公式 $S_t = S_{t-1} - \beta_t(S_{t-1}k_t - v_t)k_t^\top$ 中，$(S_{t-1}k_t - v_t)$ 代表什么？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">新旧状态矩阵的差</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">用当前 key 检索出的旧值与目标新值之间的预测误差</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">学习率</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">外积</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz3">
+  <div class="quiz-question">问题 3：为什么 DeltaNet 比线性注意力更擅长上下文检索？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">DeltaNet 用了更大的状态矩阵</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">DeltaNet 去掉了 softmax 所以更快</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">DeltaNet 每步最小化 MSE 损失，会强力修正大误差；线性注意力只最小化线性内积损失</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">DeltaNet 使用了更多的注意力头</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz4">
+  <div class="quiz-question">问题 4：DeltaNet 仍未解决的问题是什么？GDN 如何解决？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">DeltaNet 不能并行训练，GDN 解决了并行</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">DeltaNet 没有遗忘机制，GDN 把门控衰减与 delta 修正结合</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">DeltaNet 状态太小，GDN 扩大了状态</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">DeltaNet 不支持多头，GDN 支持了多头</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<script>
+function checkAnswer(el, correct) {
+  const quiz = el.closest('.quiz');
+  const options = quiz.querySelectorAll('.quiz-option');
+  const feedback = quiz.querySelector('.quiz-feedback');
+  options.forEach(o => o.classList.remove('correct', 'incorrect'));
+  if (correct) {
+    el.classList.add('correct');
+    feedback.className = 'quiz-feedback show correct';
+    feedback.textContent = '✓ 正确！';
+  } else {
+    el.classList.add('incorrect');
+    feedback.className = 'quiz-feedback show incorrect';
+    feedback.textContent = '✗ 再想想。';
+  }
+}
+</script>
+
+<div class="lesson-nav">
+  <a href="0005-linear-attention-basics.html">← 第5课：从 Softmax 注意力到线性注意力</a>
+  <a href="0007-gated-delta-rule.html">第7课：Gated Delta 规则（GDN 核心） →</a>
+</div>
+
+<div class="ask-prompt">
+  <strong>有疑问？</strong> 随时提问！比如："$\beta_t$ 是怎么算出来的？" 或 "擦除-写入视角和梯度下降视角为什么等价？"
+</div>
+
+</div>
+</body>
+</html>
