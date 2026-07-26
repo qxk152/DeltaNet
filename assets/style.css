@@ -302,13 +302,14 @@ blockquote {
   bottom: 0;
   left: 0;
   width: var(--sidebar-width);
-  padding: 10px;
+  padding: 12px;
   text-align: center;
-  background-color: hsla(0,0%,100%,.8);
-  border: 0;
+  background-color: #fff;
+  border-top: 1px solid var(--border);
+  border-right: 1px solid var(--border);
   cursor: pointer;
   z-index: 201;
-  transition: width 0.25s ease, background-color 0.3s;
+  transition: width 0.25s ease, padding 0.25s ease;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -316,19 +317,23 @@ blockquote {
 }
 
 .sidebar-toggle-button {
-  display: inline-block;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
 }
 
 .sidebar-toggle-button span {
   display: block;
-  width: 16px;
+  width: 18px;
   height: 2px;
   background-color: var(--accent);
-  margin-bottom: 4px;
+  border-radius: 1px;
 }
 .sidebar-toggle-button span:last-child { margin-bottom: 0; }
 
-.sidebar-toggle:hover .sidebar-toggle-button { opacity: 0.6; }
+.sidebar-toggle:hover { background-color: var(--accent-light); }
+.sidebar-toggle:hover .sidebar-toggle-button { opacity: 0.85; }
 
 /* overlay（移动端遮罩） */
 .toc-overlay {
@@ -374,9 +379,11 @@ blockquote {
   }
   .sidebar-toggle {
     width: auto;
-    padding: 10px 14px;
-    background-color: hsla(0,0%,100%,.9);
-    box-shadow: 1px 1px 4px rgba(0,0,0,0.1);
+    padding: 12px 14px;
+    background-color: #fff;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 1px 6px rgba(0,0,0,0.15);
   }
 }
 
