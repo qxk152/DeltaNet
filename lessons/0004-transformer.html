@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>第4课：Transformer</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Crect x='2' y='2' width='44' height='44' rx='8' fill='%23fef0ea' stroke='%23c1440e' stroke-width='2'/%3E%3Cpath d='M24 10 L36 34 L12 34 Z' fill='none' stroke='%23c1440e' stroke-width='3' stroke-linejoin='round'/%3E%3Ccircle cx='24' cy='34' r='2.5' fill='%23c1440e'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}]});"></script>
+</head>
+<body>
+
+<a href="../index.html" class="home-link">← 返回首页</a>
+
+<div class="lesson-meta">
+  <strong>第 4 课</strong> · 补充基础 · Gated Delta Networks 系列<br>
+  <a href="../MISSION.md">使命</a> ·
+  <a href="../RESOURCES.md">资源</a> ·
+  <a href="../GLOSSARY.md">术语表</a>
+</div>
+
+<h1>Transformer</h1>
+
+<p>Gated DeltaNet 是<strong>自注意力的替代品</strong>。要理解 GDN 改进了什么，必须先理解
+Transformer——它的工作原理、它的瓶颈、以及推理时的 KV Cache 问题。这一课把 Transformer
+从文本输入到完整 Block 讲清楚，并用「我爱学习」这个例子手算一遍注意力。</p>
+
+<h2>先看全貌：每个组件为什么存在</h2>
+
+<p>在拆解细节前，先用一张表回答"每个组件解决什么问题、没有它会怎样"。这样你后面读代码时，
+每个模块都"事出有因"。</p>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.88em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;">组件</th>
+      <th style="text-align:left; padding: 0.5rem;">解决的问题</th>
+      <th style="text-align:left; padding: 0.5rem;">没有它会怎样</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;"><strong>词嵌入</strong></td>
+      <td style="padding: 0.5rem;">把离散 token 变成连续向量，让网络能算</td>
+      <td style="padding: 0.5rem;">token 只是整数编号，无法做矩阵乘法、学不到语义</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;"><strong>位置编码</strong></td>
+      <td style="padding: 0.5rem;">给每个位置打标签，因为注意力本身<strong>不区分顺序</strong></td>
+      <td style="padding: 0.5rem;">"狗咬人"和"人咬狗"对模型完全一样，语序丢失</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;"><strong>自注意力</strong></td>
+      <td style="padding: 0.5rem;">让每个 token 看其他 token，按相关性聚合上下文</td>
+      <td style="padding: 0.5rem;">每个 token 只能自顾自，无法理解上下文</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;"><strong>多头注意力</strong></td>
+      <td style="padding: 0.5rem;">并行多种关注模式（语法、语义、位置……）</td>
+      <td style="padding: 0.5rem;">一个头只能学一种关系，表达力不足</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;"><strong>前馈网络 FFN</strong></td>
+      <td style="padding: 0.5rem;">对每个 token 独立做非线性变换，增加表达力</td>
+      <td style="padding: 0.5rem;">只有注意力的模型仍是"线性叠加"，复杂映射学不动</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;"><strong>残差连接</strong></td>
+      <td style="padding: 0.5rem;">让梯度直通，深层网络可训练</td>
+      <td style="padding: 0.5rem;">层数一多梯度就消失，网络训不动</td>
+    </tr>
+    <tr>
+      <td style="padding: 0.5rem;"><strong>归一化</strong></td>
+      <td style="padding: 0.5rem;">把每层输入拉回合理范围，稳定数值</td>
+      <td style="padding: 0.5rem;">数值爆炸或消失，训练不稳定</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>从文本到向量：词嵌入 + 位置编码</h2>
+
+<h3>词嵌入 (Token Embedding)</h3>
+<p>文本是离散的 token，计算机只能存成整数 ID。但整数 ID 没有"语义"——ID 为 5 和 6 的两个词未必相似。
+词嵌入是一张<strong>可学习的查找表</strong>，把每个 ID 映射成一个连续向量：</p>
+<div class="math-block">
+$$x = \text{Embedding}[\text{token\_id}] \in \mathbb{R}^{d}$$
+</div>
+<p>训练中这张表和权重一起更新，最终语义相近的词向量也相近。后续所有计算都在向量上进行。</p>
+
+<h3>位置编码 (Positional Encoding)</h3>
+<p>注意力计算 $QK^\top$ 时，理论上<strong>打乱 token 顺序结果不变</strong>（置换不变）。但语言里顺序至关重要。
+位置编码给每个位置附加独有信号：</p>
+<div class="math-block">
+$$x_t = \text{Embedding}[\text{token}_t] + p_t$$
+</div>
+<p>现代模型（含 GDN）多用<strong>旋转位置编码 (RoPE)</strong>——不在输入上加位置，而是旋转 Q、K 向量，
+使它们的内积自然带相对位置信息。</p>
+
+<h2>自注意力：核心机制</h2>
+
+<h3>三个角色：Q / K / V</h3>
+<p>对于序列中每个 token，自注意力计算它对其他所有 token 的"关注程度"，再据此聚合信息。三个角色：</p>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.9em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;">角色</th>
+      <th style="text-align:left; padding: 0.5rem;">符号</th>
+      <th style="text-align:left; padding: 0.5rem;">比喻</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;"><strong>Query (Q)</strong></td>
+      <td style="padding: 0.5rem;">$q_t$</td>
+      <td style="padding: 0.5rem;">"我想知道什么" — 当前 token 的查询</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;"><strong>Key (K)</strong></td>
+      <td style="padding: 0.5rem;">$k_i$</td>
+      <td style="padding: 0.5rem;">"我有什么" — 其他 token 的标签</td>
+    </tr>
+    <tr>
+      <td style="padding: 0.5rem;"><strong>Value (V)</strong></td>
+      <td style="padding: 0.5rem;">$v_i$</td>
+      <td style="padding: 0.5rem;">"我的内容" — 其他 token 的信息</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Wq / Wk / Wv 是什么、怎么来的</h3>
+
+<p>Q、K、V 不是凭空出现的，而是<strong>同一个输入向量 $x$ 经过三个不同的线性层</strong>投影出来的：</p>
+<div class="math-block">
+$$Q = x W_q, \quad K = x W_k, \quad V = x W_v$$
+</div>
+
+<p>这里 $W_q, W_k, W_v$ 是三个<strong>权重矩阵</strong>。关于它们，记住三点：</p>
+<ol style="margin-bottom: 1rem; padding-left: 1.5rem;">
+  <li><strong>它们是可学习参数</strong>——和第0课讲的权重一样，开始随机初始化，训练中由反向传播（第2课）不断更新，目标是让损失下降。</li>
+  <li><strong>同一个 $x$，三种投影</strong>——同一个输入向量，被三个不同的矩阵分别投影成"查询者""被查者""内容提供者"三种身份。这就解耦了"提问"和"应答"。</li>
+  <li><strong>为什么要分三个？</strong>因为"我要找什么"(Q)、"我能被什么匹配"(K)、"我实际贡献的信息"(V)是不同的角色。如果令 $Q=K=V=x$（不投影），模型会退化、表达力大减。</li>
+</ol>
+
+<div class="callout callout-insight">
+<strong>读代码时</strong>：你看到的 <code>self.q_proj = nn.Linear(d, d, bias=False)</code> 就是 $W_q$；
+<code>k_proj</code> 是 $W_k$；<code>v_proj</code> 是 $W_v$。它们内部各存着一个 $d \times d$ 的权重矩阵，
+训练时自动更新。GDN 也有这三个投影，完全一样。
+</div>
+
+<h3>手算例子：「我爱学习」走一遍注意力</h3>
+
+<p>为了把上面讲的所有东西落到具体数字，我们手算一遍。取 $d=2$（真实模型是 $d=4096$，这里为可读性），
+4 个 token 的嵌入向量，以及三个权重矩阵（实际中这些矩阵是训练学出来的，这里用简单数字演示计算流程）。</p>
+
+<div class="demo">
+  <div class="demo-controls">
+    <button class="demo-btn" onclick="attnDemo(0)">① 输入嵌入 X</button>
+    <button class="demo-btn" onclick="attnDemo(1)">② 投影 Q/K/V</button>
+    <button class="demo-btn" onclick="attnDemo(2)">③ 打分 QKᵀ</button>
+    <button class="demo-btn" onclick="attnDemo(3)">④ 因果掩码</button>
+    <button class="demo-btn" onclick="attnDemo(4)">⑤ Softmax</button>
+    <button class="demo-btn" onclick="attnDemo(5)">⑥ 聚合 A·V</button>
+  </div>
+  <div class="demo-output" id="attnOutput"></div>
+</div>
+
+<script>
+function mat(label, rows, head) {
+  var s = label + "\n";
+  if (head) s += "      " + head.map(function(h){return (h+"    ").slice(0,5);}).join("") + "\n";
+  for (var i=0;i<rows.length;i++){
+    s += (["我","爱","学","习"][i]||"  ") + "  " +
+      rows[i].map(function(v){
+        if (v===null) return "  —  ";
+        var t=(typeof v==='number')? v.toFixed(2) : v;
+        return (t+"    ").slice(0,5);
+      }).join(" ") + "\n";
+  }
+  return s;
+}
+function attnDemo(step){
+  document.querySelectorAll('.demo-btn').forEach(function(b){b.classList.remove('active');});
+  document.querySelectorAll('.demo-btn')[step].classList.add('active');
+  var X=[[1,0],[0,1],[1,1],[1,2]];
+  var Wq=[[1,0],[0,2]], Wk=[[2,0],[0,1]], Wv=[[1,1],[0,1]];
+  function mm(A,B){return A.map(function(r){return B[0].map(function(_,j){return r.reduce(function(s,rij,i){return s+rij*B[i][j];},0);});});}
+  function T(A){return A[0].map(function(_,j){return A.map(function(r){return r[j];});});}
+  var Q=mm(X,Wq),K=mm(X,Wk),V=mm(X,Wv);
+  var S=mm(Q,T(K));
+  var out="";
+  if(step===0){
+    out = mat("X (输入嵌入, 4×2):", X) +
+      "\n这就是 4 个 token 各自的 2 维向量。\n" +
+      "真实模型里这 4 行由词嵌入表查出来，再叠上位置编码。";
+  } else if(step===1){
+    out = "三个权重矩阵（可学习参数，这里用简单数字）:\n" +
+      mat("Wq:",Wq) + mat("Wk:",Wk) + mat("Wv:",Wv) +
+      "\n用同一个 X 分别右乘，得到 Q/K/V（同一个输入，三种身份）:\n" +
+      mat("Q = X·Wq:",Q) + mat("K = X·Wk:",K) + mat("V = X·Wv:",V);
+  } else if(step===2){
+    out = mat("scores = Q · Kᵀ  (4×4，行=query，列=key):", S) +
+      "\n每个分数 = 对应 Q 行与 K 行的点积。分数越大，两个 token 越相关。\n" +
+      "(为清晰起见，这里省略了 1/√d 缩放，不影响流程)";
+  } else if(step===3){
+    var masked=S.map(function(r,i){return r.map(function(v,j){return j>i?null:v;});});
+    out = mat("加因果掩码（上三角置 -∞，即看不到未来）:", masked) +
+      "\n→ '学' 只能看 '我/爱/学'，看不到 '习'";
+  } else if(step===4){
+    var A=[];
+    for(var i=0;i<4;i++){
+      var row=S[i].slice(0,i+1);
+      var es=row.map(function(v){return Math.exp(v);});
+      var sum=es.reduce(function(a,b){return a+b;},0);
+      var w=es.map(function(e){return e/sum;});
+      var full=w.concat([null,null,null,null].slice(0,4-i-1));
+      A.push(full);
+    }
+    out = mat("A = softmax(scores)（每行归一化成概率，和为1）:", A) +
+      "\n分数大的位置拿到更大权重。比如 '习' 对自己打分10，softmax 后权重0.98，几乎只看自己。";
+  } else if(step===5){
+    var A=[];
+    for(var i=0;i<4;i++){
+      var row=S[i].slice(0,i+1);
+      var es=row.map(function(v){return Math.exp(v);});
+      var sum=es.reduce(function(a,b){return a+b;},0);
+      var w=es.map(function(e){return e/sum;});
+      while(w.length<4) w.push(0);
+      A.push(w);
+    }
+    var O=mm(A,V);
+    var Or=O.map(function(r){return r.map(function(v){return Math.round(v*1000)/1000;});});
+    out = mat("O = A · V  (4×2，每个 token 的新表示):", Or) +
+      "\n每个 token 的输出 = 按注意力权重对所有 V 加权求和。\n" +
+      "比如 '习' 几乎只看自己(权重0.98)，所以 O[习] ≈ V[习] = [1.00, 3.00]。\n" +
+      "→ 输出 O 替换原 X，送入下一层。这就是注意力做的全部。";
+  }
+  document.getElementById('attnOutput').textContent = out;
+}
+attnDemo(0);
+</script>
+
+<h3>计算公式总结</h3>
+<p>把手算的流程写成一条公式（加上省略的缩放）：</p>
+<div class="math-block">
+$$\text{Attention}(Q,K,V) = \text{softmax}\!\left(\frac{QK^\top}{\sqrt{d}}\right) V$$
+</div>
+<p>除以 $\sqrt{d}$ 防止点积过大导致 softmax 饱和（分数大的被压成1、小的全归0，梯度消失）。</p>
+
+<h3>因果掩码：生成式模型的关键</h3>
+<p>语言模型生成文本时，每个 token 只能看到<strong>它之前的 token</strong>（不能偷看未来）。这通过把上三角的注意力分数设为 $-\infty$ 实现：</p>
+
+<div class="demo">
+  <div class="demo-controls">
+    <button class="demo-btn active" onclick="maskDemo(false)">无掩码 (双向)</button>
+    <button class="demo-btn" onclick="maskDemo(true)">因果掩码 (单向)</button>
+  </div>
+  <div class="demo-output" id="maskOutput"></div>
+</div>
+
+<script>
+function maskDemo(causal) {
+  const labels = ['我', '爱', '深', '度', '学', '习'];
+  const scores = [
+    [9, 3, 1, 0, 2, 1],
+    [2, 8, 4, 3, 1, 2],
+    [1, 3, 9, 5, 4, 2],
+    [0, 2, 4, 8, 3, 3],
+    [1, 1, 3, 2, 9, 5],
+    [0, 1, 2, 3, 4, 8],
+  ];
+  let lines = [];
+  lines.push("注意力矩阵 (行=query, 列=key):");
+  lines.push("      " + labels.map(l => l.padStart(3)).join(" "));
+  for (let i = 0; i < 6; i++) {
+    let row = labels[i].padStart(3) + "  ";
+    for (let j = 0; j < 6; j++) {
+      if (causal && j > i) {
+        row += "  -∞";
+      } else {
+        row += scores[i][j].toString().padStart(3) + " ";
+      }
+    }
+    lines.push(row);
+  }
+  if (causal) {
+    lines.push("");
+    lines.push("→ 上三角被掩码: '深' 看不到 '度','学','习'");
+    lines.push("→ 每个 token 只关注自己和之前的 token");
+  }
+  document.getElementById('maskOutput').textContent = lines.join("\n");
+}
+maskDemo(false);
+</script>
+
+<h2>从单头到多头注意力</h2>
+
+<h3>单头 = 一组 Wq / Wk / Wv</h3>
+<p>前面手算的例子就是<strong>单头注意力</strong>：整个模型只有<strong>一组</strong> $W_q, W_k, W_v$，
+做一次注意力计算，得到一个输出。它的局限是：一组投影只能学一种关注模式。</p>
+
+<h3>多头 = 多组 Wq / Wk / Wv</h3>
+<p>实际模型用<strong>多头注意力</strong>——并行运行多个"头"，每个头有<strong>自己的一组</strong> $W_q^{(h)}, W_k^{(h)}, W_v^{(h)}$，
+各学不同的关注模式：</p>
+<ul style="margin-bottom: 1rem; padding-left: 1.5rem;">
+  <li>头1 可能学语法关系（主语-谓语）</li>
+  <li>头2 可能学语义关系（同义词）</li>
+  <li>头3 可能学位置关系（相邻 token）</li>
+</ul>
+
+<p>设头数为 $H$，每个头维度 $d_h$，满足 $H \times d_h = d$。每个头独立做注意力，
+$H$ 个头的输出拼回来再过一个输出投影 $W_o$：</p>
+<div class="math-block">
+$$\text{head}^{(h)} = \text{Attention}(x W_q^{(h)},\ x W_k^{(h)},\ x W_v^{(h)})$$
+$$\text{MultiHead}(x) = [\text{head}^{(1)}; \cdots; \text{head}^{(H)}]\, W_o$$
+</div>
+
+<h3>实现技巧：一个大矩阵 = 拼接的多个小矩阵</h3>
+<p>代码里不会真的创建 $H$ 组小矩阵。而是用<strong>一个大 $W_q$（$d \times d$）一次投影完</strong>，
+再<strong>按头拆分</strong>（reshape 成 $H \times d_h$）。这和"多组小 $W_q^{(h)}$"数学等价，但只需一次矩阵乘法，更高效：</p>
+
+<pre><code># hidden_size=512, num_heads=8, head_dim=64
+x:     [B, T, 512]       # 输入
+q:     [B, T, 512]       # 一个大 Wq 投影后还是 512
+q:     [B, T, 8, 64]     # reshape 拆成 8 个头，每个 64 维
+q:     [B, 8, T, 64]     # 转置，让头维度在前
+
+# 每个头独立做注意力 (64 维向量之间)
+# 8 个头的结果拼回 512 维 → 过 W_o</code></pre>
+
+<div class="callout callout-insight">
+<strong>关键</strong>：单头 vs 多头，本质区别就是<strong>几组 $W_q/W_k/W_v$</strong>。
+单头=1组，多头=$H$组。每个头看到的是同一输入的不同投影子空间。
+GDN 默认 <code>num_heads=6, head_dim=256</code>，所以 <code>key_dim = 6×256 = 1536</code>。
+</div>
+
+<h3>GDN 的多头差异</h3>
+<p>GDN 与标准注意力在多头上的一个重要差异：<strong>K 和 V 的维度可以不同</strong>。</p>
+<pre><code># 标准注意力: head_dim = head_k_dim = head_v_dim (K和V同维度)
+# GDN:       head_k_dim = 256,  head_v_dim = 512 (expand_v=2)
+#            状态矩阵 S: [256, 512] 而非 [256, 256]</code></pre>
+<p>这意味着 GDN 的状态矩阵可以是"长方形"的——用较小的 key 维度检索，存储较大的 value 维度信息。</p>
+
+<h2>FFN / MLP 层：逐位置的非线性</h2>
+<p>注意力层让 token 之间交互信息。之后需要一个<strong>逐位置的前馈网络 (FFN)</strong>，
+对每个 token 独立做非线性变换。现代模型使用 SwiGLU：</p>
+<div class="math-block">
+$$\text{FFN}(x) = (\text{SiLU}(x W_{\text{gate}}) \odot x W_{\text{up}}) W_{\text{down}}$$
+</div>
+<p>三个线性层：gate 和 up 扩展维度（通常 4×），down 压缩回来。FFN 和注意力的分工：
+<strong>注意力负责 token 之间混信息，FFN 负责每个 token 内部的非线性变换</strong>。两者缺一不可。</p>
+
+<h2>残差 + 归一化：让深层可训练</h2>
+<p>残差连接（$y = x + f(x)$）让梯度能直通，避免深层梯度消失；归一化（RMSNorm）把每层输入拉回合理范围。
+这两者（第1课详述）放在每个子层周围。现代模型用 <strong>Pre-Norm</strong>：</p>
+<pre><code># Pre-Norm: 归一化在残差分支内
+h = x + attn(norm1(x))     # 注意力子层
+h = h + mlp(norm2(h))      # FFN 子层</code></pre>
+
+<h2>完整 Transformer Block</h2>
+
+<p>把所有积木拼起来：</p>
+
+<pre><code>class TransformerBlock(nn.Module):
+    def __init__(self, hidden_size, num_heads):
+        super().__init__()
+        self.attn_norm = nn.RMSNorm(hidden_size)
+        self.attn = MultiHeadAttention(hidden_size, num_heads)
+        self.mlp_norm = nn.RMSNorm(hidden_size)
+        self.mlp = SwiGLU(hidden_size, hidden_size * 4)
+
+    def forward(self, x):
+        x = x + self.attn(self.attn_norm(x))   # 子层1
+        x = x + self.mlp(self.mlp_norm(x))     # 子层2
+        return x</code></pre>
+
+<h3>数据流图</h3>
+
+<pre><code>    x ─────────────────────────┐
+      │                         │
+   RMSNorm                    │ (残差)
+      │                         │
+   多头注意力                   │
+      │                         │
+      └─────────── + ←─────────┘
+                  │
+    h ─────────────────────────┐
+      │                         │
+   RMSNorm                    │ (残差)
+      │                         │
+   MLP (SwiGLU)                │
+      │                         │
+      └─────────── + ←─────────┘
+                  │
+                输出</code></pre>
+
+<h2>为什么需要 GDN：两个瓶颈</h2>
+
+<h3>O(N²) 瓶颈</h3>
+<p>注意力矩阵 $A \in \mathbb{R}^{N \times N}$ 是瓶颈的根源：</p>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.9em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;">序列长度 N</th>
+      <th style="text-align:center; padding: 0.5rem;">注意力矩阵大小</th>
+      <th style="text-align:center; padding: 0.5rem;">显存 (float16)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">2,048</td>
+      <td style="text-align:center;">4M 元素</td>
+      <td style="text-align:center;">~8 MB</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">32,768</td>
+      <td style="text-align:center;">1B 元素</td>
+      <td style="text-align:center;">~2 GB</td>
+    </tr>
+    <tr>
+      <td style="padding: 0.5rem;">131,072</td>
+      <td style="text-align:center;">16B 元素</td>
+      <td style="text-align:center;">~32 GB</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>KV Cache：推理时的问题</h3>
+<p>推理（生成）时每生成一个新 token，需计算它与所有历史 token 的注意力。标准做法是缓存历史 K、V：</p>
+<pre><code># 生成第 N 个 token 时:
+k_cache.append(k_N)  # 缓存长度不断增长!
+v_cache.append(v_N)
+scores = q_N @ k_cache.T   # O(N)
+o_N = softmax(scores) @ v_cache   # O(N)</code></pre>
+<p>KV Cache 大小 = $O(N \times d)$，随序列长度线性增长。长上下文下，缓存显存甚至超过模型本身。</p>
+
+<div class="callout callout-warning">
+<strong>这就是 GDN 要解决的问题</strong>：用固定大小的<strong>状态矩阵</strong>（与 N 无关）替代不断增长的注意力矩阵和 KV Cache。
+代价是失去 softmax 的精确检索能力——GDN 通过门控和 delta 规则来弥补（后续课程）。
+</div>
+
+<h2>GDN Block：唯一的不同</h2>
+
+<p>GDN 的 Block 结构<strong>完全一样</strong>，只是注意力层被替换：</p>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.9em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;">组件</th>
+      <th style="text-align:center; padding: 0.5rem;">标准 Transformer</th>
+      <th style="text-align:center; padding: 0.5rem;">GDN</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">注意力层</td>
+      <td style="text-align:center;"><code>MultiHeadAttention</code></td>
+      <td style="text-align:center;"><code>GatedDeltaNet</code></td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">归一化</td>
+      <td style="text-align:center;">RMSNorm</td>
+      <td style="text-align:center;">RMSNorm (相同)</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">MLP</td>
+      <td style="text-align:center;">SwiGLU</td>
+      <td style="text-align:center;">SwiGLU (相同)</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">残差连接</td>
+      <td style="text-align:center;">Pre-Norm</td>
+      <td style="text-align:center;">Pre-Norm (相同)</td>
+    </tr>
+    <tr>
+      <td style="padding: 0.5rem;">短卷积</td>
+      <td style="text-align:center;">无</td>
+      <td style="text-align:center;">Q/K/V 各一个 ShortConv</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>GDN 论文还发现纯 GDN 不如<strong>混合架构</strong>——大部分层用 GDN，少量层用标准注意力。
+例如 24 层模型可能 0–17 层用 GDN（高效长距离压缩），18–19 层用滑动窗口注意力（精确局部检索）。
+Qwen3-Next 也采用 GDN + 少量注意力层的混合策略。</p>
+
+<div class="callout callout-ascend">
+<strong>理解到这里</strong>：你已经知道了一个 Transformer/GDN Block 的完整结构。
+后续课程将深入 <code>GatedDeltaNet</code> 层的<strong>内部</strong>——
+那才是 GDN 的核心，也是你需要在昇腾上实现的部分。
+</div>
+
+<h2>测验</h2>
+
+<div class="quiz" id="quiz1">
+  <div class="quiz-question">问题 1：Wq、Wk、Wv 是什么？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">输入数据，由词嵌入表查出</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">三个可学习的权重矩阵，把同一个 x 投影成 Q/K/V 三种身份</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">三个固定的激活函数</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">损失函数的三部分</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz2">
+  <div class="quiz-question">问题 2：单头和多头注意力的本质区别是？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">多头计算更快</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">单头不用 softmax，多头用</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">单头只有一组 Wq/Wk/Wv，多头有多组（每组一个头）</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">多头不需要残差连接</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz3">
+  <div class="quiz-question">问题 3：注意力公式中除以 √d 的目的是什么？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">减少参数量</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">防止点积过大导致 softmax 饱和</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">加速矩阵乘法</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">实现因果掩码</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz4">
+  <div class="quiz-question">问题 4：KV Cache 的主要问题是什么？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">计算太慢</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">显存随序列长度线性增长 O(N×d)</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">精度不够</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">无法并行化</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<script>
+function checkAnswer(el, correct) {
+  const quiz = el.closest('.quiz');
+  const options = quiz.querySelectorAll('.quiz-option');
+  const feedback = quiz.querySelector('.quiz-feedback');
+  options.forEach(o => o.classList.remove('correct', 'incorrect'));
+  if (correct) {
+    el.classList.add('correct');
+    feedback.className = 'quiz-feedback show correct';
+    feedback.textContent = '✓ 正确！';
+  } else {
+    el.classList.add('incorrect');
+    feedback.className = 'quiz-feedback show incorrect';
+    feedback.textContent = '✗ 再想想。';
+  }
+}
+</script>
+
+<div class="lesson-nav">
+  <a href="0003-pytorch-basics.html">← 第3课：PyTorch 核心</a>
+  <a href="0005-linear-attention-basics.html">第5课：从 Softmax 注意力到线性注意力 →</a>
+</div>
+
+<div class="ask-prompt">
+  <strong>有疑问？</strong> 随时提问！比如："为什么 K 和 V 维度可以不同？" 或 "RoPE 是怎么把位置信息加进去的？"
+</div>
+
+</body>
+</html>

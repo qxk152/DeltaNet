@@ -21,7 +21,7 @@
 <p>从零开始，逐步理解 Gated Delta Networks（GDN）的数学原理和实现细节，
 最终目标是在华为昇腾（Ascend）NPU 上实现 GDN 算子。</p>
 
-<h2>补充基础（第 0–5 课）</h2>
+<h2>补充基础（第 0–4 课）</h2>
 
 <table style="width:100%; border-collapse: collapse; font-size: 0.95em;">
   <tr style="border-bottom: 1px solid var(--border);">
@@ -42,47 +42,43 @@
   </tr>
   <tr style="border-bottom: 1px solid var(--border);">
     <td style="padding: 0.6rem;"><strong>4</strong></td>
-    <td style="padding: 0.6rem;"><a href="lessons/0004-self-attention.html">自注意力机制</a><br><small>Q/K/V、softmax、因果掩码、KV Cache、O(N²) 瓶颈</small></td>
-  </tr>
-  <tr style="border-bottom: 1px solid var(--border);">
-    <td style="padding: 0.6rem;"><strong>5</strong></td>
-    <td style="padding: 0.6rem;"><a href="lessons/0005-transformer-block.html">多头注意力与 Transformer Block</a><br><small>完整 block 结构、GDN Block 对比</small></td>
+    <td style="padding: 0.6rem;"><a href="lessons/0004-transformer.html">Transformer</a><br><small>词嵌入/位置编码、Q/K/V 与 Wq/Wk/Wv、我爱学习手算例子、单头→多头、完整 Block、O(N²)与KV Cache</small></td>
   </tr>
 </table>
 
-<h2>GDN 主线（第 6 课起）</h2>
+<h2>GDN 主线（第 5 课起）</h2>
 
 <table style="width:100%; border-collapse: collapse; font-size: 0.95em;">
   <tr style="border-bottom: 1px solid var(--border);">
-    <td style="padding: 0.6rem; width: 3rem;"><strong>6</strong></td>
-    <td style="padding: 0.6rem;"><a href="lessons/0006-linear-attention-basics.html">从 Softmax 注意力到线性注意力</a><br><small>状态矩阵 S、递归形式、O(N²)→O(N) 的关键洞察</small></td>
+    <td style="padding: 0.6rem; width: 3rem;"><strong>5</strong></td>
+    <td style="padding: 0.6rem;"><a href="lessons/0005-linear-attention-basics.html">从 Softmax 注意力到线性注意力</a><br><small>状态矩阵 S、递归形式、O(N²)→O(N) 的关键洞察</small></td>
   </tr>
   <tr style="border-bottom: 1px solid var(--border); opacity: 0.5;">
-    <td style="padding: 0.6rem;"><strong>7</strong></td>
+    <td style="padding: 0.6rem;"><strong>6</strong></td>
     <td style="padding: 0.6rem;">关联记忆视角 <small>（待创建）</small></td>
   </tr>
   <tr style="border-bottom: 1px solid var(--border); opacity: 0.5;">
-    <td style="padding: 0.6rem;"><strong>8</strong></td>
+    <td style="padding: 0.6rem;"><strong>7</strong></td>
     <td style="padding: 0.6rem;">门控机制：GLA / Mamba2 <small>（待创建）</small></td>
   </tr>
   <tr style="border-bottom: 1px solid var(--border); opacity: 0.5;">
-    <td style="padding: 0.6rem;"><strong>9</strong></td>
+    <td style="padding: 0.6rem;"><strong>8</strong></td>
     <td style="padding: 0.6rem;">Delta 规则：DeltaNet <small>（待创建）</small></td>
   </tr>
   <tr style="border-bottom: 1px solid var(--border); opacity: 0.5;">
-    <td style="padding: 0.6rem;"><strong>10</strong></td>
+    <td style="padding: 0.6rem;"><strong>9</strong></td>
     <td style="padding: 0.6rem;">Gated Delta 规则：GDN 核心 <small>（待创建）</small></td>
   </tr>
   <tr style="border-bottom: 1px solid var(--border); opacity: 0.5;">
-    <td style="padding: 0.6rem;"><strong>11</strong></td>
+    <td style="padding: 0.6rem;"><strong>10</strong></td>
     <td style="padding: 0.6rem;">分块并行算法 <small>（待创建）</small></td>
   </tr>
   <tr style="border-bottom: 1px solid var(--border); opacity: 0.5;">
-    <td style="padding: 0.6rem;"><strong>12</strong></td>
+    <td style="padding: 0.6rem;"><strong>11</strong></td>
     <td style="padding: 0.6rem;">Triton Kernel 实现解析 <small>（待创建）</small></td>
   </tr>
   <tr style="opacity: 0.5;">
-    <td style="padding: 0.6rem;"><strong>13</strong></td>
+    <td style="padding: 0.6rem;"><strong>12</strong></td>
     <td style="padding: 0.6rem;">昇腾 CANN 算子移植 <small>（待创建）</small></td>
   </tr>
 </table>
