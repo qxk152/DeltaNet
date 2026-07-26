@@ -242,7 +242,7 @@ blockquote {
   font-size: 0.9em;
 }
 
-/* ===== 左侧固定目录（docsify 风格）===== */
+/* ===== 左侧固定目录（模仿 docsify 切换方式）===== */
 .toc-sidebar {
   position: fixed;
   top: 0;
@@ -256,6 +256,7 @@ blockquote {
   font-family: var(--sans);
   font-size: 0.85rem;
   z-index: 200;
+  transition: transform 0.25s ease;
 }
 
 .toc-title {
@@ -275,9 +276,7 @@ blockquote {
 }
 
 .toc-list { list-style: none; }
-
 .toc-list .toc-main { margin-bottom: 0.4rem; }
-
 .toc-list .toc-sub {
   margin-bottom: 0.3rem;
   padding-left: 1.2rem;
@@ -294,72 +293,95 @@ blockquote {
   border-right: 2px solid transparent;
 }
 
-.toc-list a:hover {
-  background: var(--accent-light);
-  color: var(--accent);
+.toc-list a:hover { background: var(--accent-light); color: var(--accent); }
+.toc-list a.active { color: var(--accent); border-right-color: var(--accent); font-weight: 600; }
+
+/* 汉堡按钮（docsify 风格：左下角，三横线） */
+.sidebar-toggle {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  width: var(--sidebar-width);
+  padding: 10px;
+  text-align: center;
+  background-color: hsla(0,0%,100%,.8);
+  border: 0;
+  cursor: pointer;
+  z-index: 201;
+  transition: width 0.25s ease, background-color 0.3s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
 }
 
-.toc-list a.active {
-  color: var(--accent);
-  border-right-color: var(--accent);
-  font-weight: 600;
+.sidebar-toggle-button {
+  display: inline-block;
 }
 
-/* 正文区域：左侧留出 sidebar 宽度，内容居中 */
+.sidebar-toggle-button span {
+  display: block;
+  width: 16px;
+  height: 2px;
+  background-color: var(--accent);
+  margin-bottom: 4px;
+}
+.sidebar-toggle-button span:last-child { margin-bottom: 0; }
+
+.sidebar-toggle:hover .sidebar-toggle-button { opacity: 0.6; }
+
+/* overlay（移动端遮罩） */
+.toc-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.3);
+  z-index: 150;
+}
+.toc-overlay.show { display: block; }
+
+/* ===== 桌面端：默认显示 sidebar，正文左移 ===== */
 @media (min-width: 901px) {
   body {
     margin-left: var(--sidebar-width);
+    transition: margin-left 0.25s ease;
   }
-  .toc-overlay { display: none; }
+  /* 关闭状态：sidebar 滑出，正文回左 */
+  body.toc-closed {
+    margin-left: 0;
+  }
+  body.toc-closed .toc-sidebar {
+    transform: translateX(-100%);
+  }
+  body.toc-closed .sidebar-toggle {
+    width: auto;
+    padding: 10px 14px;
+  }
 }
 
-/* 移动端：sidebar 隐藏，点击按钮以 overlay 形式弹出 */
+/* ===== 移动端：默认隐藏 sidebar，点按钮 overlay 弹出 ===== */
 @media (max-width: 900px) {
   .toc-sidebar {
     transform: translateX(-100%);
-    transition: transform 0.25s ease;
     box-shadow: 4px 0 16px rgba(0,0,0,0.15);
   }
-  .toc-sidebar.open {
+  /* 移动端没有 toc-closed 概念，用 .show 控制 overlay；sidebar 通过 overlay 联动 */
+  body:not(.toc-closed) .toc-sidebar {
     transform: translateX(0);
   }
-  .toc-toggle {
-    position: fixed;
-    top: 0.8rem;
-    left: 0.8rem;
-    width: 36px;
-    height: 36px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: #fff;
-    cursor: pointer;
-    font-size: 1rem;
-    z-index: 201;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+  body.toc-closed .toc-sidebar {
+    transform: translateX(-100%);
   }
-  .toc-overlay {
-    display: none;
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.3);
-    z-index: 150;
+  .sidebar-toggle {
+    width: auto;
+    padding: 10px 14px;
+    background-color: hsla(0,0%,100%,.9);
+    box-shadow: 1px 1px 4px rgba(0,0,0,0.1);
   }
-  .toc-overlay.show {
-    display: block;
-  }
-}
-
-/* 桌面端隐藏 toggle 按钮和 overlay */
-@media (min-width: 901px) {
-  .toc-toggle { display: none; }
-  .toc-overlay { display: none; }
 }
 
 @media print {
-  .toc-sidebar, .toc-toggle, .toc-overlay { display: none; }
+  .toc-sidebar, .sidebar-toggle, .toc-overlay { display: none; }
   body { font-size: 11pt; margin-left: 0 !important; max-width: none; }
   .quiz-option:hover { border-color: var(--border); background: none; }
   .demo-btn, .lesson-nav, .ask-prompt { display: none; }

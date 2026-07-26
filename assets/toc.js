@@ -1,6 +1,6 @@
-/* toc.js — 自动生成左侧固定目录（docsify 风格）
-   桌面端：sidebar 常驻左侧，正文居中于右侧。
-   移动端：sidebar 隐藏，点按钮以 overlay 形式弹出。
+/* toc.js — 自动生成左侧固定目录（模仿 docsify 切换方式）
+   桌面端：sidebar 默认显示，点左下角汉堡按钮隐藏，再点恢复。
+   移动端：sidebar 默认隐藏，点按钮以 overlay 形式弹出。
    在每个页面引入 <script src="../assets/toc.js" defer></script> 即可。 */
 (function () {
   function init() {
@@ -41,40 +41,55 @@
     var overlay = document.createElement('div');
     overlay.className = 'toc-overlay';
 
-    /* toggle 按钮（仅移动端显示） */
-    var toggle = document.createElement('button');
-    toggle.className = 'toc-toggle';
-    toggle.innerHTML = '&#9776;';
-    toggle.title = '目录';
+    /* 汉堡按钮（docsify 风格：左下角，三横线） */
+    var toggle = document.createElement('div');
+    toggle.className = 'sidebar-toggle';
+    toggle.innerHTML = '<div class="sidebar-toggle-button"><span></span><span></span><span></span></div>';
 
     document.body.insertBefore(sidebar, document.body.firstChild);
     document.body.appendChild(overlay);
     document.body.appendChild(toggle);
 
+    var isMobile = window.innerWidth <= 900;
+
     function openSidebar() {
-      sidebar.classList.add('open');
+      document.body.classList.remove('toc-closed');
       overlay.classList.add('show');
     }
     function closeSidebar() {
-      sidebar.classList.remove('open');
+      document.body.classList.add('toc-closed');
       overlay.classList.remove('show');
     }
 
     toggle.addEventListener('click', function () {
-      if (sidebar.classList.contains('open')) closeSidebar();
-      else openSidebar();
+      if (isMobile) {
+        if (document.body.classList.contains('toc-closed')) openSidebar();
+        else closeSidebar();
+      } else {
+        document.body.classList.toggle('toc-closed');
+      }
     });
     overlay.addEventListener('click', closeSidebar);
     sidebar.querySelectorAll('a').forEach(function (a) {
       a.addEventListener('click', function () {
-        if (window.innerWidth <= 900) closeSidebar();
+        if (isMobile) closeSidebar();
       });
+    });
+
+    /* 初始状态：桌面端显示，移动端隐藏 */
+    if (isMobile) closeSidebar();
+
+    window.addEventListener('resize', function () {
+      var nowMobile = window.innerWidth <= 900;
+      if (nowMobile !== isMobile) {
+        isMobile = nowMobile;
+        if (isMobile) closeSidebar();
+        else { document.body.classList.remove('toc-closed'); overlay.classList.remove('show'); }
+      }
     });
   }
 
   function getHomeUrl() {
-    var depth = (window.location.pathname.match(/\//g) || []).length;
-    /* lessons/*.html 是一级子目录，首页在上一级 */
     if (window.location.pathname.indexOf('/lessons/') !== -1) return '../index.html';
     return 'index.html';
   }
