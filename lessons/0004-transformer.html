@@ -128,6 +128,16 @@ $$\text{similarity}(\vec{a}, \vec{b}) = \frac{\vec{a} \cdot \vec{b}}{|\vec{a}|\,
                                             │
                                         输出概率</code></pre>
 
+<div style="text-align: center; margin: 1.5rem 0;">
+  <img src="../assets/images/transformer-architecture.png" alt="Transformer 整体架构图" style="max-width: 100%; height: auto; border: 1px solid var(--border); border-radius: 6px;">
+  <p style="font-size: 0.85em; color: var(--muted); margin-top: 0.5rem;">图 4.1 Transformer 整体架构图</p>
+</div>
+
+<p>图中左侧是编码器（Encoder），右侧是解码器（Decoder）。编码器把输入句子层层提炼成
+上下文向量；解码器则一边参考自己已生成的词，一边通过<strong>交叉注意力</strong>查阅编码器的输出，
+逐个生成目标词。可以看到，每个编码器/解码器层内部都包含多头注意力和前馈网络两个子层，
+且都被 <code>Add &amp; Norm</code>（残差连接 + 层归一化）包裹。</p>
+
 <p>编码器层包含两个子层：<strong>多头自注意力</strong> + <strong>前馈网络</strong>。
 解码器层多了一个子层——<strong>交叉注意力</strong>，让解码器能"查阅"编码器的输出。
 每个子层都被<strong>残差连接 + 层归一化</strong>包裹。下面逐一拆解这些组件。</p>
