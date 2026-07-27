@@ -222,6 +222,31 @@ blockquote {
   line-height: 1.6;
 }
 
+/* KaTeX-rendered demo (matrices as formulas) */
+.demo-output.katex-mode {
+  font-family: var(--sans);
+  white-space: normal;
+  background: #fff;
+}
+.demo-row { display: flex; flex-wrap: wrap; gap: 1.4rem; align-items: flex-start; }
+.demo-mat {
+  background: var(--code-bg);
+  padding: 0.5rem 0.9rem 0.7rem;
+  border-radius: 6px;
+}
+.demo-mat-title {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin-bottom: 0.3rem;
+}
+.demo-note {
+  font-size: 0.86rem;
+  color: var(--muted);
+  margin: 0.7rem 0 0;
+  line-height: 1.55;
+}
+
 /* Navigation */
 .lesson-nav {
   display: flex;

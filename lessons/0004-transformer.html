@@ -283,64 +283,79 @@ $$\text{Attention}(Q, K, V) = \text{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}}\r
     <button class="demo-btn" onclick="attnDemo(4)">⑤ Softmax</button>
     <button class="demo-btn" onclick="attnDemo(5)">⑥ 聚合 A·V</button>
   </div>
-  <div class="demo-output" id="attnOutput"></div>
+  <div class="demo-output katex-mode" id="attnOutput"></div>
 </div>
 
 <script>
-function mat(label, rows, head) {
-  var s = label + "\n";
-  for (var i=0;i<rows.length;i++){
-    s += (["我","爱","学","习"][i]||"  ") + "  " +
-      rows[i].map(function(v){
-        if (v===null) return "  —  ";
-        var t=(typeof v==='number')? v.toFixed(2) : v;
-        return (t+"    ").slice(0,5);
-      }).join(" ") + "\n";
+var TOKENS = ["我","爱","学","习"];
+function mm(A,B){return A.map(function(r){return B[0].map(function(_,j){return r.reduce(function(s,rij,i){return s+rij*B[i][j];},0);});});}
+function T(A){return A[0].map(function(_,j){return A.map(function(r){return r[j];});});}
+function fmt(v){ return v===null ? '-\\infty' : (typeof v==='number' ? v.toFixed(2) : String(v)); }
+function matTex(rows, rowLabels, colLabels){
+  var nc = rows[0].length;
+  var hasLabels = !!rowLabels;
+  var spec = hasLabels ? ('c|' + new Array(nc+1).join('c')) : new Array(nc+1).join('c');
+  var lines = [];
+  if(colLabels){
+    lines.push((hasLabels ? ' & ' : '') + colLabels.map(function(c){return '\\text{'+c+'}';}).join(' & ') + ' \\\\ \\hline');
   }
-  return s;
+  for(var i=0;i<rows.length;i++){
+    var vals = rows[i].map(fmt).join(' & ');
+    lines.push(hasLabels ? ('\\text{' + (rowLabels[i]||'') + '} & ' + vals + ' \\\\') : (vals + ' \\\\'));
+  }
+  return '\\begin{array}{' + spec + '}\n' + lines.join('\n') + '\n\\end{array}';
 }
+function tex(latex){ return katex.renderToString(latex, {displayMode:true, throwOnError:false}); }
+function blk(title, latex){ return '<div class="demo-mat"><div class="demo-mat-title">'+title+'</div>'+tex(latex)+'</div>'; }
+function row(){ return '<div class="demo-row">' + Array.prototype.slice.call(arguments).join('') + '</div>'; }
+function note(t){ return '<p class="demo-note">'+t+'</p>'; }
+
 function attnDemo(step){
   document.querySelectorAll('.demo-btn').forEach(function(b){b.classList.remove('active');});
   document.querySelectorAll('.demo-btn')[step].classList.add('active');
   var X=[[1,0],[0,1],[1,1],[1,2]];
   var Wq=[[1,0],[0,2]], Wk=[[2,0],[0,1]], Wv=[[1,1],[0,1]];
-  function mm(A,B){return A.map(function(r){return B[0].map(function(_,j){return r.reduce(function(s,rij,i){return s+rij*B[i][j];},0);});});}
-  function T(A){return A[0].map(function(_,j){return A.map(function(r){return r[j];});});}
   var Q=mm(X,Wq),K=mm(X,Wk),V=mm(X,Wv);
   var S=mm(Q,T(K));
   var out="";
   if(step===0){
-    out = mat("X (输入嵌入, 4×2):", X) +
-      "\n这就是 4 个 token 各自的 2 维向量。\n真实模型里这 4 行由词嵌入表查出来，再叠上位置编码。";
+    out = blk('X  (输入嵌入, 4×2)', 'X = ' + matTex(X, TOKENS)) +
+      note('这就是 4 个 token 各自的 2 维向量。真实模型里这 4 行由词嵌入表查出来，再叠上位置编码。');
   } else if(step===1){
-    out = "三个权重矩阵（可学习参数，这里用简单数字）:\n" +
-      mat("Wq:",Wq) + mat("Wk:",Wk) + mat("Wv:",Wv) +
-      "\n用同一个 X 分别右乘，得到 Q/K/V（同一个输入，三种身份）:\n" +
-      mat("Q = X·Wq:",Q) + mat("K = X·Wk:",K) + mat("V = X·Wv:",V);
+    out = row(
+        blk('Wq', matTex(Wq, null, null)),
+        blk('Wk', matTex(Wk, null, null)),
+        blk('Wv', matTex(Wv, null, null))
+      ) + note('三个权重矩阵（可学习参数，这里用简单数字）。用同一个 X 分别右乘，得到 Q / K / V（同一个输入，三种身份）：') +
+      row(
+        blk('Q = X·Wq', matTex(Q, TOKENS)),
+        blk('K = X·Wk', matTex(K, TOKENS)),
+        blk('V = X·Wv', matTex(V, TOKENS))
+      );
   } else if(step===2){
-    out = mat("scores = Q · Kᵀ  (4×4，行=query，列=key):", S) +
-      "\n每个分数 = 对应 Q 行与 K 行的点积。分数越大，两个 token 越相关。\n(为清晰起见，省略了 1/√d 缩放)";
+    out = blk('scores = Q · Kᵀ  (4×4，行=query，列=key)', 'S = QK^\\top = ' + matTex(S, TOKENS, TOKENS)) +
+      note('每个分数 = 对应 Q 行与 K 行的点积。分数越大，两个 token 越相关。（为清晰起见，省略了 1/√d 缩放）');
   } else if(step===3){
     var masked=S.map(function(r,i){return r.map(function(v,j){return j>i?null:v;});});
-    out = mat("加因果掩码（上三角置 -∞，即看不到未来）:", masked) +
-      "\n→ '学' 只能看 '我/爱/学'，看不到 '习'";
+    out = blk('加因果掩码（上三角置 -∞，即看不到未来）', matTex(masked, TOKENS, TOKENS)) +
+      note('→ “学” 只能看 “我 / 爱 / 学”，看不到 “习”。');
   } else if(step===4){
     var A=[];
     for(var i=0;i<4;i++){
-      var row=S[i].slice(0,i+1);
-      var es=row.map(function(v){return Math.exp(v);});
+      var r=S[i].slice(0,i+1);
+      var es=r.map(function(v){return Math.exp(v);});
       var sum=es.reduce(function(a,b){return a+b;},0);
       var w=es.map(function(e){return e/sum;});
-      var full=w.concat([null,null,null,null].slice(0,4-i-1));
-      A.push(full);
+      while(w.length<4) w.push(0);
+      A.push(w);
     }
-    out = mat("A = softmax(scores)（每行归一化成概率，和为1）:", A) +
-      "\n分数大的位置拿到更大权重。比如 '习' 对自己打分10，softmax 后权重0.98。";
+    out = blk('A = softmax(scores)（每行归一化成概率，和为 1）', 'A = ' + matTex(A, TOKENS, TOKENS)) +
+      note('分数大的位置拿到更大权重。比如 “习” 对自己打分 10，softmax 后权重 0.98；被掩码的位置概率为 0。');
   } else if(step===5){
     var A=[];
     for(var i=0;i<4;i++){
-      var row=S[i].slice(0,i+1);
-      var es=row.map(function(v){return Math.exp(v);});
+      var r=S[i].slice(0,i+1);
+      var es=r.map(function(v){return Math.exp(v);});
       var sum=es.reduce(function(a,b){return a+b;},0);
       var w=es.map(function(e){return e/sum;});
       while(w.length<4) w.push(0);
@@ -348,13 +363,13 @@ function attnDemo(step){
     }
     var O=mm(A,V);
     var Or=O.map(function(r){return r.map(function(v){return Math.round(v*1000)/1000;});});
-    out = mat("O = A · V  (4×2，每个 token 的新表示):", Or) +
-      "\n每个 token 的输出 = 按注意力权重对所有 V 加权求和。\n" +
-      "→ 输出 O 替换原 X，送入下一层。这就是注意力做的全部。";
+    out = blk('O = A · V  (4×2，每个 token 的新表示)', 'O = AV = ' + matTex(Or, TOKENS)) +
+      note('每个 token 的输出 = 按注意力权重对所有 V 加权求和。→ 输出 O 替换原 X，送入下一层。这就是注意力做的全部。');
   }
-  document.getElementById('attnOutput').textContent = out;
+  document.getElementById('attnOutput').innerHTML = out;
 }
-attnDemo(0);
+if (typeof katex !== 'undefined') { attnDemo(0); }
+else { document.addEventListener('DOMContentLoaded', function(){ attnDemo(0); }); }
 </script>
 
 <h3>4.2.3 因果掩码：生成式模型的关键</h3>
