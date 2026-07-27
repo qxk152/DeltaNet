@@ -61,21 +61,21 @@
     <td style="padding: 0.6rem;"><strong>6</strong></td>
     <td style="padding: 0.6rem;"><a href="lessons/0006-delta-net.html">DeltaNet 与 Delta 规则</a><br><small>Delta 规则、擦除-写入视角、MQAR 检索、MSE 推导</small></td>
   </tr>
-  <tr style="border-bottom: 1px solid var(--border); opacity: 0.5;">
+  <tr style="border-bottom: 1px solid var(--border);">
     <td style="padding: 0.6rem;"><strong>7</strong></td>
-    <td style="padding: 0.6rem;">门控机制：GLA / Mamba2 <small>（待创建）</small></td>
+    <td style="padding: 0.6rem;"><a href="lessons/0007-gating-mechanism.html">门控机制：GLA / Mamba2</a><br><small>记忆碰撞、α_t 全局衰减、累积衰减 γ 与 Γ 掩码、log-space 参数化、GLA vs Mamba2</small></td>
   </tr>
-  <tr style="border-bottom: 1px solid var(--border); opacity: 0.5;">
+  <tr style="border-bottom: 1px solid var(--border);">
     <td style="padding: 0.6rem;"><strong>8</strong></td>
-    <td style="padding: 0.6rem;">Gated Delta 规则：GDN 核心 <small>（待创建）</small></td>
+    <td style="padding: 0.6rem;"><a href="lessons/0008-gated-delta-rule.html">Gated Delta 规则：GDN 核心</a><br><small>α×β 公式三步分解、2×2 手算例子、在线学习视角、TTT 与权重衰减</small></td>
   </tr>
-  <tr style="border-bottom: 1px solid var(--border); opacity: 0.5;">
+  <tr style="border-bottom: 1px solid var(--border);">
     <td style="padding: 0.6rem;"><strong>9</strong></td>
-    <td style="padding: 0.6rem;">分块并行算法 <small>（待创建）</small></td>
+    <td style="padding: 0.6rem;"><a href="lessons/0009-chunkwise-algorithm.html">分块并行算法</a><br><small>块内并行/块间串行、箭头记号、WY 表示、GDN 扩展 WY、复杂度对比</small></td>
   </tr>
-  <tr style="border-bottom: 1px solid var(--border); opacity: 0.5;">
+  <tr style="border-bottom: 1px solid var(--border);">
     <td style="padding: 0.6rem;"><strong>10</strong></td>
-    <td style="padding: 0.6rem;">Triton Kernel 实现解析 <small>（待创建）</small></td>
+    <td style="padding: 0.6rem;"><a href="lessons/0010-triton-kernel.html">Triton Kernel 实现解析</a><br><small>6 阶段数据流、cumsum/kkt/solve_tril/fwd_h/fwd_o、recurrent kernel、反向传播概览</small></td>
   </tr>
   <tr style="opacity: 0.5;">
     <td style="padding: 0.6rem;"><strong>11</strong></td>
@@ -91,6 +91,7 @@
   <li><a href="https://arxiv.org/abs/2406.06484">Parallelizing Linear Transformers with the Delta Rule over Sequence Length (NeurIPS '24)</a></li>
   <li><a href="https://arxiv.org/abs/2412.06464">Gated Delta Networks (ICLR '25)</a></li>
   <li><a href="https://github.com/sustcsonglin/flash-linear-attention">flash-linear-attention 库</a></li>
+  <li><a href="https://zhuanlan.zhihu.com/p/2007937984738129405">Qwen3.5 GDN 原理与代码分析（第 7–10 课主要素材来源）</a></li>
 </ul>
 
 <h2>关于本课程</h2>

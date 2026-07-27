@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>第7课：门控机制（GLA / Mamba2）</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E %3Crect x='2' y='2' width='44' height='44' rx='10' fill='%23fef0ea' stroke='%23c1440e' stroke-width='2'/%3E %3Cpath d='M16 22 L12 15 L21 19 Z' fill='%23c1440e'/%3E %3Cpath d='M32 22 L36 15 L27 19 Z' fill='%23c1440e'/%3E %3Ccircle cx='24' cy='30' r='11' fill='%23e8a368'/%3E %3Cellipse cx='24' cy='35' rx='7' ry='5' fill='%23fff'/%3E %3Ccircle cx='19' cy='29' r='1.8' fill='%232b2b2b'/%3E %3Ccircle cx='29' cy='29' r='1.8' fill='%232b2b2b'/%3E %3Cellipse cx='24' cy='33.5' rx='1.6' ry='1.2' fill='%232b2b2b'/%3E %3Cpath d='M24 34.5 L24 36' stroke='%232b2b2b' stroke-width='1.1' fill='none' stroke-linecap='round'/%3E %3Cpath d='M21 37.5 Q24 39.5 27 37.5' stroke='%232b2b2b' stroke-width='1.3' fill='none' stroke-linecap='round'/%3E %3Cpath d='M24 8 L34 15 L14 15 Z' fill='%232b2b2b'/%3E %3Crect x='13' y='14.5' width='22' height='2.5' fill='%232b2b2b'/%3E %3Cpath d='M24 9 L33 15' stroke='%23d4a017' stroke-width='1.4' fill='none'/%3E %3Ccircle cx='33.5' cy='15.5' r='1.4' fill='%23d4a017'/%3E %3C/svg%3E">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}]});"></script>
+  <script src="../assets/toc.js" defer></script>
+</head>
+<body>
+<div class="content-wrap">
+
+<a href="../index.html" class="home-link">← 返回首页</a>
+
+<div class="lesson-meta">
+  <strong>第 7 课</strong> · Gated Delta Networks 系列<br>
+  <a href="../MISSION.md">使命</a> ·
+  <a href="../RESOURCES.md">资源</a> ·
+  <a href="../GLOSSARY.md">术语表</a>
+</div>
+
+<h1>门控机制：GLA / Mamba2</h1>
+
+<p>第 5 课我们看到线性注意力把所有历史压缩进一个固定大小的状态矩阵 $S$，只能累加、无法遗忘；
+第 6 课 DeltaNet 用 delta 规则实现了<strong>定向擦除</strong>——只擦当前 key 对应的那一条记忆。
+但 DeltaNet 仍然缺一样东西：<strong>对整个旧记忆的快速衰减</strong>。</p>
+
+<p>这一课讲另一条改进路线——<strong>门控（gating）</strong>。它不挑某一条记忆擦除，而是给整个状态矩阵
+乘一个衰减系数 $\alpha_t$，让所有旧记忆一起"褪色"。这就是 <strong>GLA</strong> 和 <strong>Mamba2</strong> 的核心思想，
+也是 GDN 公式中 $\alpha$ 的来源。</p>
+
+<h2>7.1 记忆碰撞：线性注意力的老毛病</h2>
+
+<p>先回顾问题。线性注意力的递推是<strong>纯加法</strong>：</p>
+
+<div class="math-block">
+$$S_t = S_{t-1} + v_t k_t^\top$$
+</div>
+
+<p>状态 $S \in \mathbb{R}^{d_v \times d_k}$ 容量固定，但序列可以任意长。当序列长度远超 $d_k \times d_v$ 时，
+不同 token 的键值对外积不断叠加，<strong>相互干扰</strong>——这就是"记忆碰撞"（memory collision）。
+更糟的是，早期混进来的噪声信息永远不会被清除，会一直污染后续检索。</p>
+
+<div class="callout callout-warning">
+<strong>一句话</strong>：纯加法更新只有"写"，没有"忘"。旧信息只增不减，状态矩阵迟早被噪声填满。
+</div>
+
+<h2>7.2 门控：给记忆装上"遗忘门"</h2>
+
+<p><strong>门控</strong>的修法很直接：在写入新信息前，先把整个旧状态乘以一个标量 $\alpha_t \in (0, 1)$。</p>
+
+<div class="math-block">
+$$S_t = \alpha_t\, S_{t-1} + v_t k_t^\top$$
+</div>
+
+<p>展开看两步：</p>
+<ol style="margin-bottom: 1rem; padding-left: 1.5rem;">
+  <li><strong>衰减</strong>：$\alpha_t S_{t-1}$ —— 所有旧记忆按比例缩小。$\alpha_t$ 越小，忘得越快。</li>
+  <li><strong>写入</strong>：$+ v_t k_t^\top$ —— 新的键值对外积叠加进来。</li>
+</ol>
+
+<p>关键在于 $\alpha_t$ 是<strong>数据相关</strong>的——由当前输入 $x_t$ 投影后过 sigmoid 得到，
+模型自己学会"这一步该忘多少"。如果当前 token 带来重要的新信息，$\alpha_t$ 可以小一点（多忘旧）；
+如果是噪声，$\alpha_t$ 可以接近 1（少忘）。</p>
+
+<div class="callout callout-insight">
+<strong>对比 DeltaNet</strong>：DeltaNet 的 $(I - \beta_t k_t k_t^\top)$ 是<strong>定向擦除</strong>，
+只动 $k_t$ 方向上的分量，正交方向的记忆完全保留；门控的 $\alpha_t$ 是<strong>全局衰减</strong>，
+对 $S$ 的每个元素一视同仁地缩小。两种"遗忘哲学"各有取舍——这正是 GDN 要把两者结合的动机（第 8 课）。
+</div>
+
+<h2>7.3 累积衰减：从单步到多步</h2>
+
+<p>单步看 $\alpha_t$ 很直观，但要理解长序列上"越远的过去衰减越多"，需要把递推展开。</p>
+
+<h3>7.3.1 展开递推</h3>
+
+<p>从 $S_t = \alpha_t S_{t-1} + v_t k_t^\top$ 出发，反复代入：</p>
+
+<div class="math-block">
+$$S_t = \alpha_t(\alpha_{t-1} S_{t-2} + v_{t-1} k_{t-1}^\top) + v_t k_t^\top = \cdots$$
+</div>
+
+<p>最终每一项的历史贡献都要乘上从那个时刻到现在的<strong>累积衰减</strong>：</p>
+
+<div class="math-block">
+$$S_t = \sum_{j=1}^{t} \left(\prod_{\tau=j+1}^{t} \alpha_\tau\right) v_j k_j^\top$$
+</div>
+
+<p>位置 $j$ 写入的信息，到位置 $t$ 还剩多少？等于中间所有 $\alpha$ 连乘：<code style="background:none;padding:0">α_{j+1} × α_{j+2} × … × α_t</code>。
+越早写入（$j$ 越小），连乘的项越多，残留越少——这就是"越远的过去越模糊"。</p>
+
+<h3>7.3.2 用 γ 简化：连乘变除法</h3>
+
+<p>每次都算一长串连乘太麻烦。定义<strong>累积衰减乘积</strong> $\gamma$：</p>
+
+<div class="math-block">
+$$\gamma_j = \prod_{i=1}^{j} \alpha_i$$
+</div>
+
+<p>那么从位置 $j$ 到位置 $t$ 的衰减系数就是：</p>
+
+<div class="math-block">
+$$\prod_{\tau=j+1}^{t} \alpha_\tau = \frac{\gamma_t}{\gamma_j}$$
+</div>
+
+<p>因为 $\gamma_t = \alpha_1 \cdots \alpha_j \cdot \alpha_{j+1} \cdots \alpha_t = \gamma_j \cdot \prod_{\tau=j+1}^{t} \alpha_\tau$，
+两边除以 $\gamma_j$ 即得。<strong>一段连乘变成了两个前缀积的除法</strong>——这是后面所有衰减计算的简化关键。</p>
+
+<h3>7.3.3 数值例子</h3>
+
+<p>假设 4 个位置的衰减率都是 $\alpha = 0.9$：</p>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.9em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;">位置 j</th>
+      <th style="text-align:left; padding: 0.5rem;">γ_j（累积衰减）</th>
+      <th style="text-align:left; padding: 0.5rem;">到 t=4 的残留 γ_4/γ_j</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 0.5rem;">1</td><td style="padding: 0.5rem;">0.9</td><td style="padding: 0.5rem;">0.6561 / 0.9 = 0.729</td></tr>
+    <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 0.5rem;">2</td><td style="padding: 0.5rem;">0.81</td><td style="padding: 0.5rem;">0.6561 / 0.81 = 0.81</td></tr>
+    <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 0.5rem;">3</td><td style="padding: 0.5rem;">0.729</td><td style="padding: 0.5rem;">0.6561 / 0.729 = 0.9</td></tr>
+    <tr><td style="padding: 0.5rem;">4</td><td style="padding: 0.5rem;">0.6561</td><td style="padding: 0.5rem;">0.6561 / 0.6561 = 1.0</td></tr>
+  </tbody>
+</table>
+
+<p>位置 1 的信息到位置 4 只剩 0.729，位置 3 的还剩 0.9——越近的记忆保留越多。</p>
+
+<h2>7.4 矩阵并行形式与 Γ 掩码</h2>
+
+<p>把展开式代入输出 $o_t = S_t q_t$，可以把所有时间步写成矩阵并行形式（推导同第 5 课，只是多了衰减）：</p>
+
+<div class="math-block">
+$$O = \big((Q K^\top) \odot \Gamma\big)\, V$$
+</div>
+
+<p>和纯线性注意力 $O = (QK^\top \odot M) V$ 唯一的区别：因果掩码 $M$（0/1 二值）换成了
+<strong>衰减感知掩码 $\Gamma$</strong>：</p>
+
+<div class="math-block">
+$$\Gamma_{ij} = \begin{cases} \dfrac{\gamma_i}{\gamma_j} & i \geq j \\ 0 & i < j \end{cases}$$
+</div>
+
+<p>也就是说，门控线性注意力的并行形式，就是<strong>把标准注意力的因果掩码从"0/1 开关"换成"按距离衰减的权重"</strong>。
+近处的 token 权重接近 1，远处的 token 权重按 $\gamma_i/\gamma_j$ 指数衰减。结构上和标准注意力一模一样，
+所以可以复用 Flash Attention 的分块并行框架——这是后面 chunkwise 算法能高效跑起来的根本原因。</p>
+
+<div class="callout callout-ascend">
+<strong>工程含义</strong>：$\Gamma$ 是逐元素掩码，作用在 $QK^\top$ 上。这意味着门控线性注意力的并行实现
+并不需要重写矩阵乘法——只要在算完 $QK^\top$ 后乘上 $\Gamma$ 即可。后续在 Ascend 上移植时，
+这一步对应一个 element-wise kernel，而不是 GEMM。
+</div>
+
+<h2>7.5 GLA 与 Mamba2：同一种门控的两种身份</h2>
+
+<p>GLA（Gated Linear Attention）和 Mamba2 都用 $S_t = \alpha_t S_{t-1} + v_t k_t^\top$ 这个递推，
+区别主要在<strong>参数化和视角</strong>：</p>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.9em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;"></th>
+      <th style="text-align:left; padding: 0.5rem;">GLA</th>
+      <th style="text-align:left; padding: 0.5rem;">Mamba2 (SSD)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">出发点</td>
+      <td style="padding: 0.5rem;">线性注意力 + 门控</td>
+      <td style="padding: 0.5rem;">状态空间模型 (SSM)</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">α_t 参数化</td>
+      <td style="padding: 0.5rem;">直接投影 + sigmoid</td>
+      <td style="padding: 0.5rem;">A_log + dt_bias（log-space）</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">分块算法</td>
+      <td style="padding: 0.5rem;">chunkwise（GLA 论文首创）</td>
+      <td style="padding: 0.5rem;">SSD 分块（结构对偶推导）</td>
+    </tr>
+    <tr>
+      <td style="padding: 0.5rem;">数学结构</td>
+      <td style="padding: 0.5rem;" colspan="2">完全等价（都是 1-秩衰减 + 外积累加）</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>对算子开发者来说，<strong>两者在 kernel 层面几乎可以共用同一套实现</strong>。GDN 沿用了 Mamba2 的
+<code>A_log</code> / <code>dt_bias</code> 参数化方式——不直接存 $\alpha$，而存 $g = \log \alpha$。
+原因有二：</p>
+<ul style="margin-bottom: 1rem; padding-left: 1.5rem;">
+  <li><strong>数值稳定</strong>：长序列上 $\prod \alpha$ 会下溢。在 log-space 里连乘变加法 $\sum g$，区间衰减比 $\gamma_i/\gamma_j$ 变成减法 $g_i - g_j$ 再 $\exp$，稳得多。</li>
+  <li><strong>保证衰减</strong>：$g = -\exp(A_\log) \cdot \text{softplus}(\cdots)$，前面加负号确保 $g < 0$，从而 $\alpha = e^g \in (0,1)$ 恒成立——模型不可能学出"放大记忆"。</li>
+</ul>
+
+<h2>7.6 递推的瓶颈：为什么需要分块</h2>
+
+<p>门控递推 $S_t = \alpha_t S_{t-1} + v_t k_t^\top$ 适合<strong>推理</strong>（逐 token 生成，天然串行），
+但<strong>训练</strong>时要处理整个序列，递推形式有三个致命问题：</p>
+
+<ol style="margin-bottom: 1rem; padding-left: 1.5rem;">
+  <li><strong>显存爆炸</strong>：PyTorch autograd 要为每个时间步的 $S_t$ 保存中间值用于反向传播，$L$ 个 $d \times d$ 矩阵吃光显存。</li>
+  <li><strong>无法用 tensor core</strong>：递推核心是外积 $v_t k_t^\top$（rank-1 矩阵）和逐元素加法，没有 $m \times k \times n$ 的标准矩阵乘法块，喂不饱 tensor core，只能用慢 16 倍的 CUDA core。</li>
+  <li><strong>串行依赖</strong>：$S_t$ 依赖 $S_{t-1}$，序列方向完全串行，无法并行。</li>
+</ol>
+
+<p>7.4 节的纯并行形式 $O = ((QK^\top) \odot \Gamma) V$ 虽然能并行，但复杂度回到 $O(L^2 d)$，
+长序列上计算量爆炸。<strong>分块并行（chunkwise）算法</strong>在两者之间找平衡：把序列切成大小为 $C$ 的块，
+块内用矩阵乘法并行（喂饱 tensor core），块间用递推串行传递状态。</p>
+
+<div class="callout callout-insight">
+<strong>下一课预告</strong>：第 8 课先讲 GDN 的核心公式——把门控衰减 $\alpha$ 和 delta 规则 $\beta$ 放进同一个递推；
+第 9 课再专门推导 chunkwise 分块算法，看它如何兼顾"线性复杂度"和"tensor core 利用率"。
+</div>
+
+<h2>7.7 参考链接</h2>
+<ul style="padding-left: 1.5rem;">
+  <li><a href="https://arxiv.org/abs/2312.06635">Gated Linear Attention Transformers with Hardware-Efficient Training (GLA, 2024)</a></li>
+  <li><a href="https://arxiv.org/abs/2405.21060">Transformers are SSMs: Generalized Models (Mamba2 / SSD, 2024)</a></li>
+  <li><a href="https://arxiv.org/abs/2412.06464">Gated Delta Networks (ICLR '25)</a>——GDN 论文，本课 $\alpha_t$ 的最终归宿</li>
+  <li><a href="https://sustcsonglin.github.io/blog/2024/deltanet-2/">DeltaNet Explained (Part II) — 并行算法</a>（Songlin Yang，分块算法详解）</li>
+</ul>
+
+<h2>测验</h2>
+
+<div class="quiz" id="quiz1">
+  <div class="quiz-question">问题 1：门控线性注意力 $S_t = \alpha_t S_{t-1} + v_t k_t^\top$ 中，$\alpha_t$ 的作用是什么？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">控制新信息 $v_t k_t^\top$ 的写入幅度</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">对整个旧状态 $S_{t-1}$ 做全局衰减（遗忘）</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">只擦除 $k_t$ 方向上的旧记忆</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">把状态矩阵归一化到单位范数</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz2">
+  <div class="quiz-question">问题 2：累积衰减 $\gamma_j = \prod_{i=1}^j \alpha_i$ 的好处是什么？从位置 $j$ 到位置 $t$ 的衰减系数可以写成？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">$\gamma_t \cdot \gamma_j$（两个前缀积相乘）</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">$\gamma_t / \gamma_j$（两个前缀积相除），把连乘简化为除法</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">$\gamma_j - \gamma_t$（前缀积相减）</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">$\alpha_t - \alpha_j$（单步衰减相减）</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz3">
+  <div class="quiz-question">问题 3：门控（$\alpha_t$）和 Delta 规则（$\beta_t$）的"遗忘方式"有何本质区别？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">两者都是定向擦除，只是参数名不同</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">门控是定向擦除，Delta 规则是全局衰减</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">门控是全局衰减（所有记忆等比缩小），Delta 规则是定向擦除（只动 $k_t$ 方向）</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">没有区别，数学上完全等价</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz4">
+  <div class="quiz-question">问题 4：为什么 Mamba2/GDN 用 log-space 存 $g = \log \alpha$，而不是直接存 $\alpha$？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">直接存 $\alpha$ 无法保证 $\alpha \in (0,1)$</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">log-space 计算速度更快</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">长序列连乘 $\prod \alpha$ 会下溢；log-space 里连乘变加法、除法变减法，数值更稳定</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">因为 sigmoid 输出的是 log 概率</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<script>
+function checkAnswer(el, correct) {
+  const quiz = el.closest('.quiz');
+  const options = quiz.querySelectorAll('.quiz-option');
+  const feedback = quiz.querySelector('.quiz-feedback');
+  options.forEach(o => o.classList.remove('correct', 'incorrect'));
+  if (correct) {
+    el.classList.add('correct');
+    feedback.className = 'quiz-feedback show correct';
+    feedback.textContent = '✓ 正确！';
+  } else {
+    el.classList.add('incorrect');
+    feedback.className = 'quiz-feedback show incorrect';
+    feedback.textContent = '✗ 再想想。';
+  }
+}
+</script>
+
+<div class="lesson-nav">
+  <a href="0006-delta-net.html">← 第6课：DeltaNet 与 Delta 规则</a>
+  <a href="0008-gated-delta-rule.html">第8课：Gated Delta 规则（GDN 核心） →</a>
+</div>
+
+<div class="ask-prompt">
+  <strong>有疑问？</strong> 随时提问！比如："$\alpha_t$ 是怎么从输入算出来的？" 或 "为什么 $\Gamma$ 掩码能复用 Flash Attention 框架？"
+</div>
+
+</div>
+</body>
+</html>

@@ -13,13 +13,12 @@
 5. 多头注意力与 Transformer Block（完整 block 结构）
 
 ## GDN 主线（第6课起）
-6. 线性注意力基础（从 softmax 注意力到线性注意力）
-7. 关联记忆视角
-8. 门控机制（GLA / Mamba2）
-9. Delta 规则（DeltaNet）
-10. Gated Delta 规则（GDN 核心）
-11. 分块并行算法
-12. Triton Kernel 实现解析
-13. 昇腾 CANN 算子移植
+6. 线性注意力基础（从 softmax 注意力到线性注意力）✅
+7. 门控机制（GLA / Mamba2）✅
+8. Delta 规则（DeltaNet）✅（原第6课，已并入主线）
+9. Gated Delta 规则（GDN 核心）✅
+10. 分块并行算法 ✅
+11. Triton Kernel 实现解析 ✅
+12. 昇腾 CANN 算子移植（待创建）
 
 语言偏好: 中文

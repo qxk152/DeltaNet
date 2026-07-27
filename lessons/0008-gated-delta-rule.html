@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>第8课：Gated Delta 规则（GDN 核心）</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E %3Crect x='2' y='2' width='44' height='44' rx='10' fill='%23fef0ea' stroke='%23c1440e' stroke-width='2'/%3E %3Cpath d='M16 22 L12 15 L21 19 Z' fill='%23c1440e'/%3E %3Cpath d='M32 22 L36 15 L27 19 Z' fill='%23c1440e'/%3E %3Ccircle cx='24' cy='30' r='11' fill='%23e8a368'/%3E %3Cellipse cx='24' cy='35' rx='7' ry='5' fill='%23fff'/%3E %3Ccircle cx='19' cy='29' r='1.8' fill='%232b2b2b'/%3E %3Ccircle cx='29' cy='29' r='1.8' fill='%232b2b2b'/%3E %3Cellipse cx='24' cy='33.5' rx='1.6' ry='1.2' fill='%232b2b2b'/%3E %3Cpath d='M24 34.5 L24 36' stroke='%232b2b2b' stroke-width='1.1' fill='none' stroke-linecap='round'/%3E %3Cpath d='M21 37.5 Q24 39.5 27 37.5' stroke='%232b2b2b' stroke-width='1.3' fill='none' stroke-linecap='round'/%3E %3Cpath d='M24 8 L34 15 L14 15 Z' fill='%232b2b2b'/%3E %3Crect x='13' y='14.5' width='22' height='2.5' fill='%232b2b2b'/%3E %3Cpath d='M24 9 L33 15' stroke='%23d4a017' stroke-width='1.4' fill='none'/%3E %3Ccircle cx='33.5' cy='15.5' r='1.4' fill='%23d4a017'/%3E %3C/svg%3E">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}]});"></script>
+  <script src="../assets/toc.js" defer></script>
+</head>
+<body>
+<div class="content-wrap">
+
+<a href="../index.html" class="home-link">← 返回首页</a>
+
+<div class="lesson-meta">
+  <strong>第 8 课</strong> · Gated Delta Networks 系列<br>
+  <a href="../MISSION.md">使命</a> ·
+  <a href="../RESOURCES.md">资源</a> ·
+  <a href="../GLOSSARY.md">术语表</a>
+</div>
+
+<h1>Gated Delta 规则：GDN 核心</h1>
+
+<p>第 6 课 DeltaNet 用 $\beta_t$ 实现<strong>定向擦除</strong>——只擦当前 key 对应的记忆，正交方向不动；
+第 7 课门控用 $\alpha_t$ 实现<strong>全局衰减</strong>——所有旧记忆一起褪色，但不挑某一条。
+两种遗忘机制各有短板：DeltaNet 不能快速清空全局噪声，门控不能精确修正某条记忆。</p>
+
+<p><strong>Gated Delta Networks (GDN)</strong> 的核心创新，就是把 $\alpha_t$ 和 $\beta_t$ 放进同一个递推——
+既有全局遗忘，又有定向修正。这一课推导 GDN 公式、用数值例子拆解三步操作，最后从在线学习和
+Test-Time-Training 两个视角理解它为什么"就是该这么设计"。</p>
+
+<h2>8.1 GDN 公式：门控 × Delta</h2>
+
+<p>Gated Delta Rule 的递推公式：</p>
+
+<div class="math-block">
+$$S_t = S_{t-1}\Big(\alpha_t\,(I - \beta_t\, k_t k_t^\top)\Big) + \beta_t\, v_t k_t^\top$$
+</div>
+
+<p>一眼能看到两个熟悉的因子：外层的 $\alpha_t$（门控衰减），括号里的 $(I - \beta_t k_t k_t^\top)$（Delta 规则的擦除矩阵）。
+把它们乘开，公式分解为三个操作：</p>
+
+<div class="math-block">
+$$S_t = \underbrace{\alpha_t S_{t-1}}_{\text{① 全局衰减}} \;-\; \underbrace{\alpha_t \beta_t (S_{t-1} k_t) k_t^\top}_{\text{② 擦除旧值}} \;+\; \underbrace{\beta_t v_t k_t^\top}_{\text{③ 写入新值}}$$
+</div>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.9em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;">步骤</th>
+      <th style="text-align:left; padding: 0.5rem;">操作</th>
+      <th style="text-align:left; padding: 0.5rem;">来源</th>
+      <th style="text-align:left; padding: 0.5rem;">作用</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">①</td><td style="padding: 0.5rem;">$\alpha_t S_{t-1}$</td>
+      <td style="padding: 0.5rem;">门控（第7课）</td><td style="padding: 0.5rem;">所有旧记忆等比缩小</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">②</td><td style="padding: 0.5rem;">$-\alpha_t \beta_t (S_{t-1} k_t) k_t^\top$</td>
+      <td style="padding: 0.5rem;">Delta（第6课）</td><td style="padding: 0.5rem;">擦除 $k_t$ 方向上的旧值（先衰减再擦）</td>
+    </tr>
+    <tr>
+      <td style="padding: 0.5rem;">③</td><td style="padding: 0.5rem;">$+\beta_t v_t k_t^\top$</td>
+      <td style="padding: 0.5rem;">Delta（第6课）</td><td style="padding: 0.5rem;">写入新的键值关联</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout callout-insight">
+<strong>注意步骤②的细节</strong>：擦除的是 <strong>$\alpha_t S_{t-1}$（衰减后的旧状态）</strong>里 $k_t$ 方向上的分量，
+不是原始 $S_{t-1}$。这保证了"先全局衰减，再在衰减后的基础上做定向修正"的顺序——
+对应 8.4 节在线学习目标函数里参考点 $\alpha_t S_{t-1}$ 的设定。
+</div>
+
+<h2>8.2 数值例子：手算一遍</h2>
+
+<p>设 $d_v = d_k = 2$，状态是 $2 \times 2$ 矩阵。初始状态设为单位阵：</p>
+
+<div class="math-block">
+$$S_{t-1} = \begin{bmatrix} 1.0 & 0.0 \\ 0.0 & 1.0 \end{bmatrix}$$
+</div>
+
+<p>回顾第 5 课的约定：$S$ 的<strong>列</strong>对应 key 空间维度，<strong>行</strong>对应 value 空间维度。
+$S$ 的第 $j$ 列可理解为"key 空间第 $j$ 个基方向上存储的 value 向量"。</p>
+
+<p>当前时间步参数：$k_t = [1, 0]^\top$，$v_t = [0.7, 0.3]^\top$，$\alpha_t = 0.9$，$\beta_t = 1.0$（完全替换）。
+$k_t = [1, 0]^\top$ 是一个"地址"——指定在 key 空间第 1 个基方向上读写。</p>
+
+<p><strong>读取</strong> $S k_t$ 是矩阵乘法（$S$ 每行与 $k_t$ 内积）；<strong>写回</strong> $\cdots k_t^\top$ 是外积，
+$k_t^\top = [1, 0]$ 使结果矩阵第二列全为 0，即只动第一列。</p>
+
+<h3>第一步：全局衰减</h3>
+<div class="math-block">
+$$0.9 \times \begin{bmatrix} 1 & 0 \\ 0 & 1 \end{bmatrix} = \begin{bmatrix} 0.9 & 0 \\ 0 & 0.9 \end{bmatrix}$$
+</div>
+<p>所有元素等比缩为 0.9 倍。</p>
+
+<h3>第二步：擦除旧值</h3>
+<div class="math-block">
+$$-0.9 \times 1.0 \times \begin{bmatrix} 1 \\ 0 \end{bmatrix} [1 \; 0] = -\begin{bmatrix} 0.9 & 0 \\ 0 & 0 \end{bmatrix}$$
+</div>
+<p>这里 $S_{t-1} k_t = [1, 0]^\top$（取 $S_{t-1}$ 第一列），外积后只有第一列非零。
+注意前面乘了 $\alpha_t = 0.9$，擦除的是衰减后的值 $0.9 \times [1, 0]^\top$。</p>
+
+<h3>第三步：写入新值</h3>
+<div class="math-block">
+$$1.0 \times \begin{bmatrix} 0.7 \\ 0.3 \end{bmatrix} [1 \; 0] = \begin{bmatrix} 0.7 & 0 \\ 0.3 & 0 \end{bmatrix}$$
+</div>
+
+<h3>最终结果：三者相加</h3>
+<div class="math-block">
+$$S_t = \begin{bmatrix} 0.9 & 0 \\ 0 & 0.9 \end{bmatrix} - \begin{bmatrix} 0.9 & 0 \\ 0 & 0 \end{bmatrix} + \begin{bmatrix} 0.7 & 0 \\ 0.3 & 0 \end{bmatrix} = \begin{bmatrix} 0.7 & 0 \\ 0.3 & 0.9 \end{bmatrix}$$
+</div>
+
+<p>看清楚发生了什么：</p>
+<ul style="margin-bottom: 1rem; padding-left: 1.5rem;">
+  <li><strong>第一列</strong>（$k_t$ 指向的 key 维度）：从 $[1, 0]^\top$ 被精确替换为 $[0.7, 0.3]^\top$——先衰减、再擦除、再写入新 value，等价于"用新值覆盖"。</li>
+  <li><strong>第二列</strong>（正交方向）：从 $[0, 1]^\top$ 仅衰减为 $[0, 0.9]^\top$——只受全局 $\alpha_t$ 影响，没被擦除也没被写入。</li>
+</ul>
+
+<div class="callout callout-ascend">
+<strong>调节两个旋钮</strong>：若 $\alpha = 1$（不衰减），第二列完全不动，GDN 退化为 DeltaNet；
+若 $\beta = 0$（不修正），只有全局衰减、没有定向替换，GDN 退化为门控线性注意力。
+$\alpha$ 控制"忘多快"，$\beta$ 控制"修多准"——两者正交，模型可以同时学到快速遗忘和精确检索。
+</div>
+
+<h2>8.3 在线学习视角：四种模型的目标函数</h2>
+
+<p>线性 RNN 的隐状态更新可以用<strong>在线学习</strong>的思路统一理解：把 $S_t$ 看作一个"模型"，
+每个新 token 提供一对 $(k_t, v_t)$ 作为样本，更新规则是某个目标函数关于 $S_t$ 的解。
+四种模型对应四个目标函数，差别只在"参考点"和"关联项"：</p>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.88em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;">模型</th>
+      <th style="text-align:left; padding: 0.5rem;">目标函数</th>
+      <th style="text-align:left; padding: 0.5rem;">更新规则</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">线性注意力</td>
+      <td style="padding: 0.5rem;">$\|S_t - S_{t-1}\|_F^2 - 2\langle S_t k_t, v_t\rangle$</td>
+      <td style="padding: 0.5rem;">$S_t = S_{t-1} + v_t k_t^\top$</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">Mamba2（门控）</td>
+      <td style="padding: 0.5rem;">$\|S_t - \alpha_t S_{t-1}\|_F^2 - 2\langle S_t k_t, v_t\rangle$</td>
+      <td style="padding: 0.5rem;">$S_t = \alpha_t S_{t-1} + v_t k_t^\top$</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">DeltaNet</td>
+      <td style="padding: 0.5rem;">$\|S_t - S_{t-1}\|_F^2 - 2\langle S_t k_t, \beta_t(v_t - S_{t-1} k_t)\rangle$</td>
+      <td style="padding: 0.5rem;">$S_t = S_{t-1}(I - \beta_t k_t k_t^\top) + \beta_t v_t k_t^\top$</td>
+    </tr>
+    <tr>
+      <td style="padding: 0.5rem;"><strong>GDN</strong></td>
+      <td style="padding: 0.5rem;">$\|S_t - \alpha_t S_{t-1}\|_F^2 - 2\langle S_t k_t, \beta_t(v_t - \alpha_t S_{t-1} k_t)\rangle$</td>
+      <td style="padding: 0.5rem;">$S_t = S_{t-1}(\alpha_t(I - \beta_t k_t k_t^\top)) + \beta_t v_t k_t^\top$</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>目标函数两项各自的含义：</p>
+<ul style="margin-bottom: 1rem; padding-left: 1.5rem;">
+  <li><strong>第一项 $\|S_t - \text{参考点}\|_F^2$</strong>：正则项，约束新状态不要偏离参考点太远。线性注意力和 DeltaNet 的参考点是 $S_{t-1}$（不主动遗忘）；Mamba2 和 GDN 的参考点是 $\alpha_t S_{t-1}$（先衰减再约束）。</li>
+  <li><strong>第二项 $-2\langle S_t k_t, \cdots\rangle$</strong>：关联项，鼓励 $S_t$ 在 $k_t$ 方向上编码 $v_t$。线性注意力和 Mamba2 用 $v_t$ 直接关联；DeltaNet 和 GDN 用 $\beta_t(v_t - \text{旧值})$ 关联<strong>误差</strong>——这就是 delta 修正的来源。</li>
+</ul>
+
+<div class="callout callout-insight">
+<strong>GDN = Mamba2 的参考点 + DeltaNet 的误差关联</strong>。把表格右下角的 GDN 目标函数和上面三个对比：
+它的第一项跟 Mamba2 一样（带 $\alpha_t$ 衰减参考点），第二项跟 DeltaNet 一样（带 $\beta_t$ 误差修正）。
+GDN 不是凭空发明，而是把两个各自有效的改进"自然拼"在一起。
+</div>
+
+<h2>8.4 TTT 视角：带权重衰减的梯度下降</h2>
+
+<p>第 6 课讲过，DeltaNet 的更新规则可以从<strong>Test-Time-Training (TTT)</strong>角度理解：
+对损失 $\mathcal{L} = \frac{1}{2}\|S k_t - v_t\|^2$ 做一步梯度下降，$\beta_t$ 是学习率。</p>
+
+<p>GDN 在此基础上加了 $\alpha_t$。把 GDN 公式改写成等价形式：</p>
+
+<div class="math-block">
+$$S_t = \alpha_t S_{t-1} - \beta_t\,(\alpha_t S_{t-1}\, k_t - v_t)\, k_t^\top$$
+</div>
+
+<p>这就清晰了：先对参数做一步<strong>自适应权重衰减</strong>（$S \leftarrow \alpha_t S$），
+再在衰减后的参数上对 MSE 损失做一步梯度下降。这与 <strong>AdamW</strong> 中 weight decay 的角色完全一样——
+在梯度更新前先把参数往零拉一点，防止旧记忆过度累积。</p>
+
+<div class="callout callout-ascend">
+<strong>两个视角不矛盾</strong>：在线学习视角回答"每种更新规则在最优解什么目标"，TTT 视角回答"更新过程本身对应什么优化算法"。
+对算子实现者，TTT 视角更有用——它告诉我们 GDN 的递推本质是"衰减 + 一步 SGD"，所以 recurrent kernel 的循环体
+就是这两步操作（第 10 课会看到对应代码：先 <code>b_h *= exp(b_g)</code>，再算 delta 项）。
+</div>
+
+<h2>8.5 为什么 GDN 优于单一机制</h2>
+
+<p>用第 6 课"猫狗鸟"的例子对比三种机制。假设记忆里有三条：猫→在窗台上、狗→在院子里、鸟→在树上。
+当前 token 带来 $k_t =$ "猫"、$v_t =$ "坐在垫子上"。</p>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.9em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;">条目</th>
+      <th style="text-align:left; padding: 0.5rem;">更新前</th>
+      <th style="text-align:left; padding: 0.5rem;">门控 (α=0.9)</th>
+      <th style="text-align:left; padding: 0.5rem;">Delta (β=1)</th>
+      <th style="text-align:left; padding: 0.5rem;">GDN (α=0.9, β=1)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">猫</td><td style="padding: 0.5rem;">在窗台上</td>
+      <td style="padding: 0.5rem;">0.9×在窗台上 + 坐在垫子上</td>
+      <td style="padding: 0.5rem;">坐在垫子上（覆盖）</td>
+      <td style="padding: 0.5rem;">坐在垫子上（先衰减再覆盖）</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">狗</td><td style="padding: 0.5rem;">在院子里</td>
+      <td style="padding: 0.5rem;">0.9×在院子里</td>
+      <td style="padding: 0.5rem;">在院子里（不动）</td>
+      <td style="padding: 0.5rem;">0.9×在院子里（衰减）</td>
+    </tr>
+    <tr>
+      <td style="padding: 0.5rem;">鸟</td><td style="padding: 0.5rem;">在树上</td>
+      <td style="padding: 0.5rem;">0.9×在树上</td>
+      <td style="padding: 0.5rem;">在树上（不动）</td>
+      <td style="padding: 0.5rem;">0.9×在树上（衰减）</td>
+    </tr>
+  </tbody>
+</table>
+
+<ul style="margin-bottom: 1rem; padding-left: 1.5rem;">
+  <li><strong>纯门控</strong>：猫的旧值没被清除，只是变小后叠加新值——检索"猫"会得到混合结果，精度差。</li>
+  <li><strong>纯 Delta</strong>：猫被精确替换，但狗和鸟永不衰减——长序列上陈旧噪声累积，无法遗忘。</li>
+  <li><strong>GDN</strong>：猫被精确替换（定向修正），狗和鸟逐步衰减（全局遗忘）——既有精度又有遗忘能力。</li>
+</ul>
+
+<p>实验上，GDN 在 MQAR 检索任务和长序列语言建模上都优于 GLA 和 DeltaNet——这正是 Qwen3.5 选用它的原因。</p>
+
+<h2>8.6 参考链接</h2>
+<ul style="padding-left: 1.5rem;">
+  <li><a href="https://arxiv.org/abs/2412.06464">Gated Delta Networks: Improving Mamba2 with Delta Rule (ICLR '25)</a>——GDN 论文，本课公式来源</li>
+  <li><a href="https://arxiv.org/abs/2402.18850">Linear Transformers Are Secretly Fast Weight Programmers (2024)</a>——在线学习统一视角</li>
+  <li><a href="https://sustcsonglin.github.io/blog/2024/deltanet-1/">DeltaNet Explained (Part I) — Songlin Yang</a>——TTT 视角与 delta 规则</li>
+  <li><a href="https://qwen.ai/blog?id=4074cca80393150c248e508aa62983f9cb7d27cd">Qwen3-Next 技术博客</a>——GDN 工业部署实践</li>
+</ul>
+
+<h2>测验</h2>
+
+<div class="quiz" id="quiz1">
+  <div class="quiz-question">问题 1：GDN 公式 $S_t = S_{t-1}(\alpha_t(I - \beta_t k_t k_t^\top)) + \beta_t v_t k_t^\top$ 展开后的三步操作顺序是？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">写入新值 → 全局衰减 → 擦除旧值</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">全局衰减 → 擦除旧值 → 写入新值</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">擦除旧值 → 写入新值 → 全局衰减</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">三步顺序无关紧要，结果一样</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz2">
+  <div class="quiz-question">问题 2：8.2 节的数值例子中，为什么最终状态 $S_t$ 的第二列从 $[0,1]^\top$ 变成了 $[0, 0.9]^\top$ 而不是 $[0, 0.7]^\top$？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">因为写入了新值 $v_t = [0.7, 0.3]^\top$</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">第二列在 $k_t = [1,0]^\top$ 的正交方向上，只受全局衰减 $\alpha_t = 0.9$ 影响，没被擦除也没被写入</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">因为 $\beta_t = 1$ 把第二列清零了</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">计算错误，应该是 $[0, 0.7]^\top$</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz3">
+  <div class="quiz-question">问题 3：从在线学习视角看，GDN 目标函数的第一项 $\|S_t - \alpha_t S_{t-1}\|_F^2$ 与 DeltaNet 的 $\|S_t - S_{t-1}\|_F^2$ 区别意味着什么？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">GDN 的正则项更强</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">GDN 的参考点是衰减后的 $\alpha_t S_{t-1}$，即"先遗忘再约束"；DeltaNet 的参考点是原状态，不主动遗忘</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">GDN 没有 delta 修正</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">两者数学上等价</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz4">
+  <div class="quiz-question">问题 4：从 TTT 视角，GDN 相比 DeltaNet 多了什么？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">多了一步动量（momentum）</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">在梯度下降前对参数做了自适应权重衰减（类似 AdamW 的 weight decay），对应 $\alpha_t$</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">把学习率 $\beta_t$ 改成了自适应的</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">把 MSE 损失换成了交叉熵</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<script>
+function checkAnswer(el, correct) {
+  const quiz = el.closest('.quiz');
+  const options = quiz.querySelectorAll('.quiz-option');
+  const feedback = quiz.querySelector('.quiz-feedback');
+  options.forEach(o => o.classList.remove('correct', 'incorrect'));
+  if (correct) {
+    el.classList.add('correct');
+    feedback.className = 'quiz-feedback show correct';
+    feedback.textContent = '✓ 正确！';
+  } else {
+    el.classList.add('incorrect');
+    feedback.className = 'quiz-feedback show incorrect';
+    feedback.textContent = '✗ 再想想。';
+  }
+}
+</script>
+
+<div class="lesson-nav">
+  <a href="0007-gating-mechanism.html">← 第7课：门控机制（GLA / Mamba2）</a>
+  <a href="0009-chunkwise-algorithm.html">第9课：分块并行算法 →</a>
+</div>
+
+<div class="ask-prompt">
+  <strong>有疑问？</strong> 随时提问！比如："$\alpha_t$ 和 $\beta_t$ 在训练中是怎么从输入算出来的？" 或 "为什么擦除要用衰减后的 $\alpha_t S_{t-1}$ 而不是 $S_{t-1}$？"
+</div>
+
+</div>
+</body>
+</html>

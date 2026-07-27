@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>第9课：分块并行算法</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E %3Crect x='2' y='2' width='44' height='44' rx='10' fill='%23fef0ea' stroke='%23c1440e' stroke-width='2'/%3E %3Cpath d='M16 22 L12 15 L21 19 Z' fill='%23c1440e'/%3E %3Cpath d='M32 22 L36 15 L27 19 Z' fill='%23c1440e'/%3E %3Ccircle cx='24' cy='30' r='11' fill='%23e8a368'/%3E %3Cellipse cx='24' cy='35' rx='7' ry='5' fill='%23fff'/%3E %3Ccircle cx='19' cy='29' r='1.8' fill='%232b2b2b'/%3E %3Ccircle cx='29' cy='29' r='1.8' fill='%232b2b2b'/%3E %3Cellipse cx='24' cy='33.5' rx='1.6' ry='1.2' fill='%232b2b2b'/%3E %3Cpath d='M24 34.5 L24 36' stroke='%232b2b2b' stroke-width='1.1' fill='none' stroke-linecap='round'/%3E %3Cpath d='M21 37.5 Q24 39.5 27 37.5' stroke='%232b2b2b' stroke-width='1.3' fill='none' stroke-linecap='round'/%3E %3Cpath d='M24 8 L34 15 L14 15 Z' fill='%232b2b2b'/%3E %3Crect x='13' y='14.5' width='22' height='2.5' fill='%232b2b2b'/%3E %3Cpath d='M24 9 L33 15' stroke='%23d4a017' stroke-width='1.4' fill='none'/%3E %3Ccircle cx='33.5' cy='15.5' r='1.4' fill='%23d4a017'/%3E %3C/svg%3E">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}]});"></script>
+  <script src="../assets/toc.js" defer></script>
+</head>
+<body>
+<div class="content-wrap">
+
+<a href="../index.html" class="home-link">← 返回首页</a>
+
+<div class="lesson-meta">
+  <strong>第 9 课</strong> · Gated Delta Networks 系列<br>
+  <a href="../MISSION.md">使命</a> ·
+  <a href="../RESOURCES.md">资源</a> ·
+  <a href="../GLOSSARY.md">术语表</a>
+</div>
+
+<h1>分块并行算法</h1>
+
+<p>第 7 课末尾我们看到，门控递推 $S_t = \alpha_t S_{t-1} + v_t k_t^\top$ 在训练时有三个硬伤：
+显存爆炸、用不上 tensor core、序列方向串行。纯并行形式 $O = ((QK^\top) \odot \Gamma) V$ 虽能并行，
+复杂度却退回 $O(L^2 d)$。这一课讲<strong>分块并行（chunkwise）算法</strong>如何在两者间取平衡——
+它正是 GDN 能高效训练的根本，也是第 10 课要解析的 Triton kernel 所实现的算法。</p>
+
+<h2>9.1 核心思想：块内并行，块间串行</h2>
+
+<p>把长度为 $L$ 的序列切成大小为 $C$ 的 chunk（通常 $C = 64, 128, 256$）。记号约定：</p>
+<ul style="margin-bottom: 1rem; padding-left: 1.5rem;">
+  <li>下标 $[t]$ 表示第 $t$ 个 chunk（如 $\mathbf{S}_{[t]}$ 是第 $t$ 个 chunk <strong>开始时</strong>的隐状态）</li>
+  <li>上标 $r$ 表示 chunk 内第 $r$ 个位置（$r = 1, \ldots, C$）</li>
+  <li>$\gamma^r = \prod_{i=1}^r \alpha^i$ 是 chunk 内从位置 1 到 $r$ 的累积衰减（第 7 课定义的 $\gamma$）</li>
+</ul>
+
+<p>每个 chunk 做两件事：</p>
+<ol style="margin-bottom: 1rem; padding-left: 1.5rem;">
+  <li><strong>隐状态递推</strong>：$\mathbf{S}_{[t+1]}$ 由 $\mathbf{S}_{[t]}$ 和当前 chunk 的 K/V 算出。<strong>chunk 间串行</strong>（$\mathbf{S}_{[t+1]}$ 依赖 $\mathbf{S}_{[t]}$），但串行步数从 $L$ 降到 $L/C$。涉及 $d_v \times d_k$ 矩阵运算，单步 $O(Cd^2)$。</li>
+  <li><strong>输出计算</strong>：chunk 内 $C$ 个位置的输出 $\mathbf{O}_{[t]}$ 由 $\mathbf{S}_{[t]}$ 和当前 chunk 的 Q/K/V 算出。<strong>chunk 内完全并行</strong>，可用 tensor core。</li>
+</ol>
+
+<div class="callout callout-insight">
+<strong>整体复杂度 $O(Ld^2 + LCd)$</strong>：在 $C$ 固定时对序列长度 $L$ 是<strong>线性</strong>的，同时 chunk 内的 $C \times C$ 注意力矩阵乘法能喂饱 tensor core。$C$ 是"串行步数"和"并行效率"的调节旋钮。
+</div>
+
+<p>关键性质：<strong>chunkwise 是精确算法</strong>，chunk size 不影响数值结果——$C=1$ 退化成递推形式，$C=L$ 退化成纯并行形式。下面分三步推导：先线性注意力，再 DeltaNet 的 WY 表示，最后 GDN。</p>
+
+<h2>9.2 线性注意力的 chunkwise 公式</h2>
+
+<h3>9.2.1 隐状态 S 递推</h3>
+
+<p>从单步递推 $\mathbf{S}_r = \alpha_r \mathbf{S}_{r-1} + v_r k_r^\top$ 出发，把 chunk 内 $C$ 步展开（用 $\gamma^C = \prod_{i=1}^C \alpha_i$ 和 $\prod_{i=r+1}^C \alpha_i = \gamma^C / \gamma^r$）：</p>
+
+<div class="math-block">
+$$\mathbf{S}_{[t+1]} = \underbrace{\gamma^C \mathbf{S}_{[t]}}_{\overrightarrow{\mathbf{S}_{[t]}}} + \mathbf{V}_{[t]}^\top\, \overrightarrow{\mathbf{K}_{[t]}}$$
+</div>
+
+<p>这里引入<strong>右箭头</strong>记号 $\overrightarrow{\cdot}$：把衰减系数吸收进向量。
+$\overrightarrow{\mathbf{S}_{[t]}} = \gamma^C \mathbf{S}_{[t]}$ 是上一个 chunk 末尾的状态乘以当前 chunk 的整体衰减；
+$\overrightarrow{k_r} = (\gamma^C / \gamma^r) k_r$——位置越靠前（$r$ 越小），衰减越多，因为它要传到 chunk 末尾。</p>
+
+<h3>9.2.2 输出 O 计算</h3>
+
+<p>chunk 内位置 $r$ 的输出 $o_r = \mathbf{S}_r q_r$，把 $\mathbf{S}_r$ 展开后拆成两部分：</p>
+
+<div class="math-block">
+$$o_r = \underbrace{\gamma^r \mathbf{S}_{[t]} q_r}_{\text{inter-chunk}} + \underbrace{\sum_{j=1}^r \frac{\gamma^r}{\gamma^j}(q_r^\top k_j) v_j}_{\text{intra-chunk}}$$
+</div>
+
+<ul style="margin-bottom: 1rem; padding-left: 1.5rem;">
+  <li><strong>inter-chunk</strong>：与 chunk <strong>之前</strong>的历史状态 $\mathbf{S}_{[t]}$ 交互。引入<strong>左箭头</strong> $\overleftarrow{q_r} = \gamma^r q_r$（位置越靠后衰减越多，因为离 chunk 开头越远），矩阵形式 $\overleftarrow{\mathbf{Q}_{[t]}} \mathbf{S}_{[t]}^\top$。</li>
+  <li><strong>intra-chunk</strong>：chunk <strong>内部</strong>的注意力。$\gamma^r/\gamma^j$ 正好是第 7 课的 $\Gamma_{[t]}$ 矩阵第 $(r,j)$ 元素，矩阵形式 $(\mathbf{Q}_{[t]} \mathbf{K}_{[t]}^\top \odot \Gamma_{[t]}) \mathbf{V}_{[t]}$。</li>
+</ul>
+
+<p>合并两个 chunkwise 核心公式：</p>
+
+<div class="math-block">
+$$\boxed{\;\mathbf{O}_{[t]} = \overleftarrow{\mathbf{Q}_{[t]}}\, \mathbf{S}_{[t]}^\top + \big(\mathbf{Q}_{[t]} \mathbf{K}_{[t]}^\top \odot \Gamma_{[t]}\big)\, \mathbf{V}_{[t]}\;}$$
+</div>
+
+<h3>9.2.3 箭头记号速查</h3>
+
+<p>箭头表示"把衰减系数吸收进向量"，方向是衰减的参考点：</p>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.9em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;">记号</th>
+      <th style="text-align:left; padding: 0.5rem;">含义</th>
+      <th style="text-align:left; padding: 0.5rem;">用在</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">$\overleftarrow{q_r} = \gamma^r q_r$</td>
+      <td style="padding: 0.5rem;">向 chunk <strong>首位</strong>衰减：位置越靠后衰减越多</td>
+      <td style="padding: 0.5rem;">Q（与历史 $\mathbf{S}_{[t]}$ 交互，越远衰减越大）</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">$\overrightarrow{k_r} = \frac{\gamma^C}{\gamma^r} k_r$</td>
+      <td style="padding: 0.5rem;">向 chunk <strong>末位</strong>衰减：位置越靠前衰减越多</td>
+      <td style="padding: 0.5rem;">K（贡献要传到 chunk 末尾的 $\mathbf{S}_{[t+1]}$）</td>
+    </tr>
+    <tr>
+      <td style="padding: 0.5rem;">$\overrightarrow{\mathbf{S}_{[t]}} = \gamma^C \mathbf{S}_{[t]}$</td>
+      <td style="padding: 0.5rem;">上一 chunk 状态乘以当前 chunk 整体衰减</td>
+      <td style="padding: 0.5rem;">隐状态递推</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>9.2.4 数值直觉</h3>
+
+<p>假设 chunk 有 4 个位置，衰减率均为 $\alpha = 0.9$（$\gamma^1=0.9, \gamma^2=0.81, \gamma^3=0.729, \gamma^4=0.6561$）：</p>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.9em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;">位置 r</th>
+      <th style="text-align:left; padding: 0.5rem;">$\overleftarrow{q}$ 衰减（×$\gamma^r$）</th>
+      <th style="text-align:left; padding: 0.5rem;">$\overrightarrow{k}$ 衰减（×$\gamma^C/\gamma^r$）</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 0.5rem;">1</td><td style="padding: 0.5rem;">×0.9</td><td style="padding: 0.5rem;">×0.729</td></tr>
+    <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 0.5rem;">2</td><td style="padding: 0.5rem;">×0.81</td><td style="padding: 0.5rem;">×0.81</td></tr>
+    <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 0.5rem;">3</td><td style="padding: 0.5rem;">×0.729</td><td style="padding: 0.5rem;">×0.9</td></tr>
+    <tr><td style="padding: 0.5rem;">4</td><td style="padding: 0.5rem;">×0.6561（衰减最多）</td><td style="padding: 0.5rem;">×1.0（不衰减）</td></tr>
+  </tbody>
+</table>
+
+<p>$\overleftarrow{q}$ 的位置 4 衰减最多（距 chunk 开头最远）；$\overrightarrow{k}$ 的位置 1 衰减最多（距 chunk 末尾最远）——
+方向相反，因为 Q 读历史、K 写未来。</p>
+
+<h2>9.3 DeltaNet 的 WY 表示</h2>
+
+<p>GDN 的 chunkwise 算法建立在 DeltaNet 的分块算法上。DeltaNet 递推里有转移矩阵的累积乘积
+$\prod_{i=1}^r (I - \beta_i k_i k_i^\top)$，每个 $(I - \beta_i k_i k_i^\top)$ 是广义 Householder 矩阵。
+数值线性代数有个经典结论：Householder 矩阵乘积可紧凑表示为 $I - W K^\top$，即 <strong>WY 表示</strong>。</p>
+
+<h3>9.3.1 归纳证明要点</h3>
+
+<p>定义 $\mathbf{P}_n = \prod_{t=1}^n (I - \beta_t k_t k_t^\top)$，要证 $\mathbf{P}_n = I - \sum_{i=1}^n w_i k_i^\top$。</p>
+<ul style="margin-bottom: 1rem; padding-left: 1.5rem;">
+  <li><strong>基础</strong> $n=1$：$\mathbf{P}_1 = I - \beta_1 k_1 k_1^\top$，令 $w_1 = \beta_1 k_1$ 即可。</li>
+  <li><strong>归纳</strong>：假设 $n-1$ 成立，则 $\mathbf{P}_n = \mathbf{P}_{n-1}(I - \beta_n k_n k_n^\top)$，展开后交叉项 $\sum_{t<n} w_t(k_t^\top k_n)$ 是标量乘向量，可合并进 $w_n$，得递推 $w_n = \beta_n k_n - \beta_n \sum_{t<n} w_t(k_t^\top k_n)$。</li>
+</ul>
+
+<p>隐状态也有 WY 表示 $\mathbf{S}_n = \sum_{t=1}^n u_t k_t^\top$，$u$ 的递推结构同 $w$，只是初值从 $\beta_n k_n$ 换成 $\beta_n v_n$。
+两个递推共享同一求解过程——即 <strong>UT 变换</strong>。写成矩阵形式：</p>
+
+<div class="math-block">
+$$\mathbf{T}_{[t]} = \big[I + \text{strictLower}(\text{diag}(\beta_{[t]})\, \mathbf{K}_{[t]} \mathbf{K}_{[t]}^\top)\big]^{-1}\, \text{diag}(\beta_{[t]})$$
+</div>
+<div class="math-block">
+$$\mathbf{W}_{[t]} = \mathbf{T}_{[t]} \mathbf{K}_{[t]}, \quad \mathbf{U}_{[t]} = \mathbf{T}_{[t]} \mathbf{V}_{[t]}$$
+</div>
+
+<div class="callout callout-insight">
+<strong>为什么是下三角求逆而不是通用求逆</strong>：$\text{strictLower}(\cdot)$ 使 $(I + A)$ 是<strong>下三角且对角线为 1</strong>的矩阵，
+可用<strong>前代法（forward substitution）</strong>逐行求逆，复杂度 $O(C^2)$ 而非通用求逆的 $O(C^3)$。
+第 10 课的 <code>solve_tril</code> kernel 就是干这件事。
+</div>
+
+<h3>9.3.2 DeltaNet 分块算法</h3>
+
+<div class="math-block">
+$$\mathbf{S}_{[t+1]} = \mathbf{S}_{[t]} + (\mathbf{U}_{[t]} - \mathbf{W}_{[t]} \mathbf{S}_{[t]}^\top)^\top \mathbf{K}_{[t]}$$
+</div>
+<div class="math-block">
+$$\mathbf{O}_{[t]} = \mathbf{Q}_{[t]} \mathbf{S}_{[t]}^\top + (\mathbf{Q}_{[t]} \mathbf{K}_{[t]}^\top \odot \mathbf{M})(\mathbf{U}_{[t]} - \mathbf{W}_{[t]} \mathbf{S}_{[t]}^\top)$$
+</div>
+
+<p>对比 9.2 节线性注意力：DeltaNet 多了 $(\mathbf{U} - \mathbf{W} \mathbf{S}^\top)$ 这一项——它把"擦除-写入"的 delta 修正打包进 $\mathbf{U}, \mathbf{W}$ 两个矩阵，$\mathbf{W} \mathbf{S}^\top$ 是擦除项，$\mathbf{U}$ 是写入项。</p>
+
+<h2>9.4 GDN 的 chunkwise 算法</h2>
+
+<p>GDN 把门控衰减 $\alpha$ 加进 DeltaNet 的框架。核心改动有两处：</p>
+
+<h3>9.4.1 扩展的 WY 表示</h3>
+
+<p>DeltaNet 的 $\mathbf{K}\mathbf{K}^\top$ 被替换为<strong>衰减感知的 Gram 矩阵</strong> $\Gamma \odot \mathbf{K}\mathbf{K}^\top$：</p>
+
+<div class="math-block">
+$$\widetilde{\mathbf{U}}_{[t]} = \big[I + \text{strictLower}(\text{diag}(\beta_{[t]})\, (\Gamma_{[t]} \odot \mathbf{K}_{[t]} \mathbf{K}_{[t]}^\top))\big]^{-1}\, \text{diag}(\beta_{[t]})\, \mathbf{V}_{[t]}$$
+</div>
+
+<p>这是 GDN 与 DeltaNet 的<strong>唯一数学区别</strong>：在求 UT 变换的逆矩阵时，把 $\mathbf{K}\mathbf{K}^\top$ 逐元素乘以衰减矩阵 $\Gamma$。
+第 10 课的 <code>chunk_scaled_dot_kkt_fwd</code> kernel 里，先算 $\mathbf{K}\mathbf{K}^\top$，再乘 $\exp(g_i - g_j)$ 构成 $\Gamma$——对应的就是这一步。</p>
+
+<h3>9.4.2 带衰减的分块公式</h3>
+
+<p>把 DeltaNet 公式加上箭头衰减（同 9.2 节线性注意力的处理方式）：</p>
+
+<div class="math-block">
+$$\mathbf{S}_{[t+1]} = \overrightarrow{\mathbf{S}_{[t]}} + \big(\widetilde{\mathbf{U}}_{[t]} - \overleftarrow{\mathbf{W}_{[t]}} \mathbf{S}_{[t]}^\top\big)^\top \overrightarrow{\mathbf{K}_{[t]}}$$
+</div>
+
+<div class="math-block">
+$$\mathbf{O}_{[t]} = \overleftarrow{\mathbf{Q}_{[t]}} \mathbf{S}_{[t]}^\top + (\mathbf{Q}_{[t]} \mathbf{K}_{[t]}^\top \odot \mathbf{M}) \big(\widetilde{\mathbf{U}}_{[t]} - \overleftarrow{\mathbf{W}_{[t]}} \mathbf{S}_{[t]}^\top\big)$$
+</div>
+
+<p>其中带箭头的量（吸收衰减到向量）：</p>
+<div class="math-block">
+$$\overleftarrow{q_r} = \gamma^r q_r, \quad \overleftarrow{w_r} = \gamma^r w_r, \quad \overrightarrow{k_r} = \frac{\gamma^C}{\gamma^r} k_r, \quad \overrightarrow{\mathbf{S}_{[t]}} = \gamma^C \mathbf{S}_{[t]}$$
+</div>
+
+<div class="callout callout-ascend">
+<strong>算法-代码对应（第 10 课预告）</strong>：上面两个公式直接对应 6 个 Triton kernel 的依赖链——
+$\widetilde{\mathbf{U}}, \overleftarrow{\mathbf{W}}$ 由 <code>recompute_w_u_fwd</code> 算（注意 $\overleftarrow{\mathbf{W}}$ 多乘 $\exp(g)$，$\widetilde{\mathbf{U}}$ 不乘）；
+$\mathbf{S}_{[t+1]}$ 递推由 <code>chunk_gated_delta_rule_fwd_h</code> 算（chunk 间串行）；
+$\mathbf{O}_{[t]}$ 由 <code>chunk_fwd_o</code> 算（inter/intra 融合）。
+理解本课公式，是读懂第 10 课代码的前提。
+</div>
+
+<h2>9.5 复杂度与工程含义</h2>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.9em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;">形式</th>
+      <th style="text-align:left; padding: 0.5rem;">计算复杂度</th>
+      <th style="text-align:left; padding: 0.5rem;">tensor core</th>
+      <th style="text-align:left; padding: 0.5rem;">用途</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">递推 (recurrent)</td>
+      <td style="padding: 0.5rem;">$O(Ld^2)$</td>
+      <td style="padding: 0.5rem;">用不上（element-wise）</td>
+      <td style="padding: 0.5rem;">推理（逐 token）</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">纯并行 (parallel)</td>
+      <td style="padding: 0.5rem;">$O(L^2 d)$</td>
+      <td style="padding: 0.5rem;">能用</td>
+      <td style="padding: 0.5rem;">短序列</td>
+    </tr>
+    <tr>
+      <td style="padding: 0.5rem;"><strong>分块 (chunkwise)</strong></td>
+      <td style="padding: 0.5rem;">$O(Ld^2 + LCd)$</td>
+      <td style="padding: 0.5rem;">能用（chunk 内 GEMM）</td>
+      <td style="padding: 0.5rem;"><strong>训练</strong></td>
+    </tr>
+  </tbody>
+</table>
+
+<p>chunkwise 在 $C$ 固定时对 $L$ 线性，同时 chunk 内的 $C \times C$ 矩阵乘法和 $C \times d$ 的 GEMM 都能用 tensor core。
+$C$ 的选择是工程权衡：$C$ 大则 chunk 内并行度高、tensor core 利用率好，但寄存器压力大、显存占用高；
+$C$ 小则串行步数多。flash-linear-attention 库默认 $C = 64$。</p>
+
+<div class="callout callout-warning">
+<strong>对 Ascend 移植的含义</strong>：chunkwise 算法的核心是若干 GEMM + element-wise 衰减 + 下三角求逆。
+Ascend 的 Cube 单元对应 GPU tensor core，能加速 GEMM；但下三角前代求逆（<code>solve_tril</code>）是逐行串行的，
+在 Ascend 上需要特别设计——这是第 11 课 CANN 移植的重点难点之一。
+</div>
+
+<h2>9.6 参考链接</h2>
+<ul style="padding-left: 1.5rem;">
+  <li><a href="https://sustcsonglin.github.io/blog/2024/deltanet-2/">DeltaNet Explained (Part II) — 并行算法</a>（本课 WY 表示与 chunkwise 推导的主要来源）</li>
+  <li><a href="https://arxiv.org/abs/2406.06484">Parallelizing Linear Transformers with the Delta Rule over Sequence Length (NeurIPS '24)</a>——DeltaNet 分块算法论文</li>
+  <li><a href="https://arxiv.org/abs/2412.06464">Gated Delta Networks (ICLR '25)</a>——GDN 扩展 WY 表示，附录 A 有完整证明</li>
+  <li><a href="https://arxiv.org/abs/2312.06635">Gated Linear Attention Transformers with Hardware-Efficient Training (GLA)</a>——门控 + chunkwise 的首创</li>
+</ul>
+
+<h2>测验</h2>
+
+<div class="quiz" id="quiz1">
+  <div class="quiz-question">问题 1：chunkwise 算法的整体复杂度是 $O(Ld^2 + LCd)$，为什么说它对序列长度 $L$ 是线性的？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">因为 $C$ 也随 $L$ 增长</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">因为 chunk size $C$ 是固定常数（如 64），$LCd$ 项对 $L$ 仍是线性的，没有 $L^2$ 项</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">因为 $d$ 会随 $L$ 减小</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">实际上不是线性的，题目说法有误</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz2">
+  <div class="quiz-question">问题 2：左箭头 $\overleftarrow{q_r} = \gamma^r q_r$ 和右箭头 $\overrightarrow{k_r} = \frac{\gamma^C}{\gamma^r} k_r$ 的衰减方向有何不同？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">两者都让位置越靠后衰减越多</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">两者都让位置越靠前衰减越多</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">$\overleftarrow{q}$ 让靠后的位置衰减多（读历史，离 chunk 开头远）；$\overrightarrow{k}$ 让靠前的位置衰减多（写未来，离 chunk 末尾远）</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">两者没有区别，只是记号不同</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz3">
+  <div class="quiz-question">问题 3：GDN 的 chunkwise 算法与 DeltaNet 的 chunkwise 算法，在数学上的唯一区别是什么？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">GDN 多了一个 $\Gamma$ 衰减矩阵作用在输出 $\mathbf{O}$ 上</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">UT 变换求逆时，$\mathbf{K}\mathbf{K}^\top$ 被替换为 $\Gamma \odot \mathbf{K}\mathbf{K}^\top$（衰减感知 Gram 矩阵）</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">GDN 不再用 WY 表示</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">GDN 的 chunk size 必须更大</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz4">
+  <div class="quiz-question">问题 4：为什么 UT 变换里的 $(I + A)^{-1}$ 可以用 $O(C^2)$ 的前代法求逆，而不是通用求逆的 $O(C^3)$？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">因为 $A$ 是稀疏矩阵</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">因为 $A$ 是严格下三角，$(I+A)$ 是下三角且对角线为 1，每行只依赖更小的行号，可逐行前代求解</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">因为 $C$ 很小所以无所谓</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">因为用了 Cholesky 分解</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<script>
+function checkAnswer(el, correct) {
+  const quiz = el.closest('.quiz');
+  const options = quiz.querySelectorAll('.quiz-option');
+  const feedback = quiz.querySelector('.quiz-feedback');
+  options.forEach(o => o.classList.remove('correct', 'incorrect'));
+  if (correct) {
+    el.classList.add('correct');
+    feedback.className = 'quiz-feedback show correct';
+    feedback.textContent = '✓ 正确！';
+  } else {
+    el.classList.add('incorrect');
+    feedback.className = 'quiz-feedback show incorrect';
+    feedback.textContent = '✗ 再想想。';
+  }
+}
+</script>
+
+<div class="lesson-nav">
+  <a href="0008-gated-delta-rule.html">← 第8课：Gated Delta 规则（GDN 核心）</a>
+  <a href="0010-triton-kernel.html">第10课：Triton Kernel 实现解析 →</a>
+</div>
+
+<div class="ask-prompt">
+  <strong>有疑问？</strong> 随时提问！比如："为什么 $\overleftarrow{\mathbf{W}}$ 要多乘 $\exp(g)$ 而 $\widetilde{\mathbf{U}}$ 不乘？" 或 "chunk size $C$ 选 64 还是 256 怎么决定？"
+</div>
+
+</div>
+</body>
+</html>

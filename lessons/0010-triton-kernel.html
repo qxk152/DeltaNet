@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>第10课：Triton Kernel 实现解析</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E %3Crect x='2' y='2' width='44' height='44' rx='10' fill='%23fef0ea' stroke='%23c1440e' stroke-width='2'/%3E %3Cpath d='M16 22 L12 15 L21 19 Z' fill='%23c1440e'/%3E %3Cpath d='M32 22 L36 15 L27 19 Z' fill='%23c1440e'/%3E %3Ccircle cx='24' cy='30' r='11' fill='%23e8a368'/%3E %3Cellipse cx='24' cy='35' rx='7' ry='5' fill='%23fff'/%3E %3Ccircle cx='19' cy='29' r='1.8' fill='%232b2b2b'/%3E %3Ccircle cx='29' cy='29' r='1.8' fill='%232b2b2b'/%3E %3Cellipse cx='24' cy='33.5' rx='1.6' ry='1.2' fill='%232b2b2b'/%3E %3Cpath d='M24 34.5 L24 36' stroke='%232b2b2b' stroke-width='1.1' fill='none' stroke-linecap='round'/%3E %3Cpath d='M21 37.5 Q24 39.5 27 37.5' stroke='%232b2b2b' stroke-width='1.3' fill='none' stroke-linecap='round'/%3E %3Cpath d='M24 8 L34 15 L14 15 Z' fill='%232b2b2b'/%3E %3Crect x='13' y='14.5' width='22' height='2.5' fill='%232b2b2b'/%3E %3Cpath d='M24 9 L33 15' stroke='%23d4a017' stroke-width='1.4' fill='none'/%3E %3Ccircle cx='33.5' cy='15.5' r='1.4' fill='%23d4a017'/%3E %3C/svg%3E">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}]});"></script>
+  <script src="../assets/toc.js" defer></script>
+</head>
+<body>
+<div class="content-wrap">
+
+<a href="../index.html" class="home-link">← 返回首页</a>
+
+<div class="lesson-meta">
+  <strong>第 10 课</strong> · Gated Delta Networks 系列<br>
+  <a href="../MISSION.md">使命</a> ·
+  <a href="../RESOURCES.md">资源</a> ·
+  <a href="../GLOSSARY.md">术语表</a>
+</div>
+
+<h1>Triton Kernel 实现解析</h1>
+
+<p>前几课我们推导了 GDN 的数学公式和 chunkwise 分块算法。这一课把这些公式<strong>落到代码</strong>——
+解析 <a href="https://github.com/fla-org/flash-linear-attention">flash-linear-attention</a> 库中
+<code>fla/ops/gated_delta_rule/</code> 下的 Triton kernel。目标是让你读懂前向的 6 个 kernel、
+推理用的 recurrent kernel，建立"公式 ↔ 代码"的对应关系——这是第 11 课 Ascend CANN 移植的前提。</p>
+
+<h2>10.1 从模型调用到 kernel</h2>
+
+<p>先看 GDN 在模型层怎么被调用。Qwen3.5 的 <code>Qwen3_5MoeGatedDeltaNet</code> 类里，
+前向最终调到 <code>chunk_gated_delta_rule(q, k, v, g, beta)</code>。关键是 <strong>$\alpha_t$ 和 $\beta_t$ 如何从输入算出来</strong>：</p>
+
+<pre><code># beta_t：直接 sigmoid，控制新 KV 对的写入幅度
+beta = self.in_proj_b(hidden_states).sigmoid()
+
+# g_t (log-space 衰减) = -exp(A_log) * softplus(a(x) + dt_bias)
+# alpha_t = exp(g_t) ∈ (0,1)；-exp(A_log) 保证 g_t<0 即 alpha_t<1（恒衰减）
+g = -self.A_log.float().exp() * F.softplus(
+        self.in_proj_a(hidden_states).float() + self.dt_bias)</code></pre>
+
+<div class="callout callout-insight">
+<strong>log-space 的工程意义</strong>：不直接存 $\alpha$，而存 $g = \log \alpha$（第 7 课讲过）。
+长序列上累积衰减 $\prod \alpha$ 会下溢；在 log-space 里连乘变加法 $\sum g$，
+区间衰减比 $\gamma_i/\gamma_j$ 变成减法 $g_i - g_j$ 再 $\exp$，数值稳定得多。
+后续所有 kernel 里的 <code>exp(g[i] - g[j])</code> 都源于此。
+</div>
+
+<p>前向流程：QKV 投影 + causal conv1d → 算 $\beta, g$ → 调 <code>chunk_gated_delta_rule</code> → 输出门控 RMSNorm + out_proj。</p>
+
+<h2>10.2 前向总流程：6 阶段数据流</h2>
+
+<p><code>chunk_gated_delta_rule_fwd</code> 把第 9 课的分块算法拆成 6 个 Triton kernel，依赖链如下
+（以 $B{=}1, T{=}1024, H{=}32, K{=}V{=}128, BT{=}64$ 为例）：</p>
+
+<pre><code>输入 q,k,v [1,1024,32,128]; g,beta [1,1024,32]
+ ├─(a) g_cumsum = chunk_local_cumsum(g)              -> [1,1024,32]      # γ 的 log-space 前缀和
+ ├─(b) A = chunk_scaled_dot_kkt_fwd(k, g, beta)      -> [1,1024,32,64]  # strictLower(diag(β)·(Γ⊙K@K^T))
+ ├─(c) A_inv = solve_tril(A)                          -> [1,1024,32,64]  # (I+A)^{-1}，前代法
+ ├─(d) w, u = recompute_w_u_fwd(k, v, beta, A, g)    -> 各[1,1024,32,128] # W=←W, U=Ũ (WY 表示)
+ ├─(e) h, v_new = chunk_gated_delta_rule_fwd_h(...)  -> h[1,32,128,128]  # S 递推（chunk 间串行）
+ └─(f) o = chunk_fwd_o(q, k, v_new, h, g, scale)     -> [1,1024,32,128]  # O = inter + intra</code></pre>
+
+<p>对应第 9 课公式的映射：</p>
+<table style="width:100%; border-collapse: collapse; font-size: 0.88em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;">kernel</th>
+      <th style="text-align:left; padding: 0.5rem;">公式对应</th>
+      <th style="text-align:left; padding: 0.5rem;">并行性</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 0.5rem;">(a) cumsum</td><td style="padding: 0.5rem;">$\gamma^r = \sum_{i \leq r} g_i$（log-space）</td><td style="padding: 0.5rem;">chunk 间无依赖，全并行</td></tr>
+    <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 0.5rem;">(b) kkt</td><td style="padding: 0.5rem;">$\text{strictLower}(\text{diag}(\beta)(\Gamma \odot KK^\top))$</td><td style="padding: 0.5rem;">全并行</td></tr>
+    <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 0.5rem;">(c) solve_tril</td><td style="padding: 0.5rem;">$(I + A)^{-1}$（前代法）</td><td style="padding: 0.5rem;">全并行</td></tr>
+    <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 0.5rem;">(d) recompute_w_u</td><td style="padding: 0.5rem;">$\overleftarrow{W} = T \cdot \text{diag}(\beta) \cdot e^g \cdot K$，$\widetilde{U} = T \cdot \text{diag}(\beta) \cdot V$</td><td style="padding: 0.5rem;">全并行</td></tr>
+    <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 0.5rem;">(e) fwd_h</td><td style="padding: 0.5rem;">$S_{[t+1]} = \overrightarrow{S_{[t]}} + (\widetilde{U} - \overleftarrow{W} S^\top)^\top \overrightarrow{K}$</td><td style="padding: 0.5rem;"><strong>chunk 间串行</strong></td></tr>
+    <tr><td style="padding: 0.5rem;">(f) fwd_o</td><td style="padding: 0.5rem;">$O = \overleftarrow{Q} S^\top + (QK^\top \odot M)(\widetilde{U} - \overleftarrow{W} S^\top)$</td><td style="padding: 0.5rem;">全并行</td></tr>
+  </tbody>
+</table>
+
+<div class="callout callout-ascend">
+<strong>只有 (e) 是串行的</strong>：前 4 个和最后 1 个 kernel 都按 chunk 打平并行（grid 维度含 chunk 总数）；
+唯独 <code>fwd_h</code> 因为 $S_{[t+1]}$ 依赖 $S_{[t]}$，必须 chunk 间顺序执行。这个差异决定了 varlen 下两套不同的索引方案（10.5 节）。
+</div>
+
+<h2>10.3 衰减基石：chunk_local_cumsum</h2>
+
+<p>对应第 9 课的累积衰减 $\gamma^r = \prod_{i=1}^r \alpha_i$。在 log-space 里连乘变加法，
+所以 kernel 核心就是 chunk 内前缀和 <code>tl.cumsum</code>：</p>
+
+<pre><code>i_t, i_bh = tl.program_id(0), tl.program_id(1)
+i_b, i_h = i_bh // H, i_bh % H
+p_s = tl.make_block_ptr(s + bos*H + i_h, (T,), (H,), (i_t*BT,), (BT,), (0,))
+p_o = tl.make_block_ptr(o + bos*H + i_h, (T,), (H,), (i_t*BT,), (BT,), (0,))
+b_s = tl.load(p_s, boundary_check=(0,)).to(tl.float32)
+b_o = tl.cumsum(b_s, axis=0)            # chunk 内前缀和 = γ 的 log
+if REVERSE:                              # 反向传播用：前缀和 → 后缀和
+    b_z = tl.sum(b_s, axis=0)
+    b_o = -b_o + b_z[None] + b_s
+tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0,))</code></pre>
+
+<p>举例：$\alpha = [0.9, 0.8, 0.95, 0.85]$，$g = [-0.105, -0.223, -0.051, -0.163]$，
+$g_\text{cumsum} = [-0.105, -0.328, -0.379, -0.542]$。
+token 1→3 的衰减 $= \exp(-0.542 - (-0.328)) = \exp(-0.214) \approx 0.807 = 0.95 \times 0.85$。</p>
+
+<div class="callout callout-insight">
+<strong>REVERSE 分支为什么是后缀和</strong>：前向 $y_i = \sum_{j \leq i} x_j$，反向时
+$\partial L / \partial x_j = \sum_{i \geq j} \partial L / \partial y_i$——即梯度要从后往前累加，正好是后缀和。
+这就是反向传播里 <code>dg</code> 要做 reverse cumsum 的原因。
+</div>
+
+<h2>10.4 并行 kernel 组：kkt → recompute_w_u → solve_tril</h2>
+
+<h3>10.4.1 chunk_scaled_dot_kkt_fwd（阶段 b）</h3>
+
+<p>算 UT 变换矩阵 $A = \text{strictLower}(\text{diag}(\beta) \cdot (\Gamma \odot KK^\top))$。
+关键技巧：K 维可能 $> BK$，要循环累加；$\beta$ 后乘（在衰减之后才乘，减少循环内计算）。</p>
+
+<pre><code>b_A = tl.zeros([BT, BT], dtype=tl.float32)
+for i_k in range(tl.cdiv(K, BK)):
+    p_k = tl.make_block_ptr(k + (bos*H + i_h)*K, (T, K), (H*K, 1),
+                            (i_t*BT, i_k*BK), (BT, BK), (1, 0))
+    b_k = tl.load(p_k, boundary_check=(0, 1))
+    b_A += tl.dot(b_k, tl.trans(b_k))                       # K @ K^T
+if USE_G:
+    b_g = tl.load(p_g, boundary_check=(0,))
+    b_A *= exp(b_g[:, None] - b_g[None, :])                 # Γ[i,j]=exp(g[i]-g[j])
+b_A *= b_b[:, None]                                          # diag(β) @ (...)
+m_A = (o_t[:, None] > o_t[None, :]) & (m_t[:, None] & m_t)  # strictLower 掩码
+b_A = tl.where(m_A, b_A, 0)</code></pre>
+
+<h3>10.4.2 recompute_w_u_fwd（阶段 d）</h3>
+
+<p>算 WY 表示的两个矩阵。注意一个<strong>不对称</strong>：$\overleftarrow{W}$ 多乘 $\exp(g)$，$\widetilde{U}$ 不乘。</p>
+
+<pre><code># U = A_inv @ diag(beta) @ V   （U 不乘 exp(g)）
+for i_v in range(tl.cdiv(V, BV)):
+    b_v = tl.load(p_v, boundary_check=(0, 1))
+    b_vb = (b_v * b_b[:, None]).to(b_v.dtype)     # 先乘 beta
+    b_u = tl.dot(b_A, b_vb, allow_tf32=False)     # b_A 即 (I+A)^{-1}
+    tl.store(p_u, b_u, boundary_check=(0, 1))
+
+# W = A_inv @ diag(beta) @ diag(exp(g)) @ K  （b_kb *= exp(g)）
+#   W 后续要与 chunk 间隐状态 S^T 相乘，需对齐衰减基准，故额外乘 exp(g)</code></pre>
+
+<div class="callout callout-warning">
+<strong>为什么 W 乘 exp(g) 而 U 不乘</strong>：$\widetilde{U}$ 的衰减已通过 $\Gamma \odot KK^\top$ 在 UT 变换里吸收（chunk 内部）；
+而 $\overleftarrow{W}$ 后续在 <code>fwd_h</code> 里要与 chunk <strong>之间</strong>的隐状态 $S^\top$ 相乘，需要对齐到 chunk 首位的衰减基准，
+所以预先把 $\exp(g)$ 吸收进去，让 <code>fwd_h</code> 内少一次逐元素乘。这是"把计算挪到准备阶段"的典型优化。
+</div>
+
+<h3>10.4.3 solve_tril（阶段 c）</h3>
+
+<p>算 $(I + A)^{-1}$，$A$ 是严格下三角。因 $(I+A)$ 下三角且对角为 1，用<strong>前代法逐行求逆</strong>，
+无需通用 $O(C^3)$ 求逆。实现采用<strong>两级分块融合</strong>：BT=64 拆成 4 个 16×16 块，第一级 4 个对角块各自前代求逆（可并行），
+第二级用分块求逆公式合并（有依赖链 $A_{11}^{-1} \to A_{21}^{-1} \to A_{31}^{-1}, A_{32}^{-1} \to \cdots$）。</p>
+
+<pre><code># 第一级：16×16 对角块逐行前代
+for i in range(2, min(16, T - i_t*BT)):
+    b_a_11 = -tl.load(A + (i_t*BT + i)*H*BT + o_i)
+    b_a_11 = tl.where(o_i < i, b_a_11, 0.)
+    b_a_11 += tl.sum(b_a_11[:, None] * b_Ai_11, 0)   # 前代核心：累加已知行贡献
+    b_Ai_11 = tl.where((o_i == i)[:, None], b_a_11, b_Ai_11)
+b_Ai_11 += m_I                                       # 加单位矩阵</code></pre>
+
+<p>第二级用分块求逆公式合并 4 个块：<code>b_Ai_21 = -dot(dot(b_Ai_22, b_A_21), b_Ai_11)</code>，依赖链依次算出。
+融合在一个 kernel 里避免中间结果写回 HBM。</p>
+
+<h2>10.5 核心串行 kernel：chunk_gated_delta_rule_fwd_h</h2>
+
+<p>这是整个算法的心脏——对应第 9 课的隐状态递推 $S_{[t+1]} = \overrightarrow{S_{[t]}} + (\widetilde{U} - \overleftarrow{W} S^\top)^\top \overrightarrow{K}$。
+chunk <strong>间串行</strong>，每个 chunk 起始的 $S$ 存 HBM 供 <code>chunk_fwd_o</code> 并行读取。</p>
+
+<h3>10.5.1 varlen 的两套索引（重点）</h3>
+
+<p>其他 kernel 用 <code>chunk_indices</code> 把所有序列的 chunk 打平并行：</p>
+<pre><code># cu_seqlens=[0,128,254,1254], BT=64 → 长度[128,126,1000] chunk数[2,2,16]
+# chunk_indices = [[0,0],[0,1],[1,0],[1,1],[2,0],...,[2,15]]  # (seq_id, chunk_id)
+# grid = (NT_total, B*H)，每个 program 跑一个 chunk</code></pre>
+
+<p>但 <code>fwd_h</code> 因 $S$ 有顺序依赖，<strong>每个 program 跑一整条序列的所有 chunk</strong>，用 <code>chunk_offsets</code> 定位序列在 $h$ 缓冲区的起始：</p>
+<pre><code># chunk_offsets = [0, 2, 4, 20]  # 累积和：序列0在h[0:2], 序列1在h[2:4], 序列2在h[4:20]
+# grid = (V_tiles, N*H)，每个 program 跑一条序列</code></pre>
+
+<h3>10.5.2 主循环 5 步</h3>
+
+<pre><code>for i_t in range(NT):
+    # (1) 存当前 chunk 起始 h（供 chunk_fwd_o 读）
+    p_h1 = tl.make_block_ptr(h + i_t*H*K*V, (K,V), (V,1), (0, i_v*BV), (64,BV), (1,0))
+    tl.store(p_h1, b_h1, boundary_check=(0, 1))
+    # (2) v_new = U - W @ h  （K 分块累加 b_h1/b_h2/b_h3/b_h4）
+    b_w = tl.load(make_block_ptr(w, (T,K), (H*K,1), (i_t*BT,0), (BT,64), (1,0)))
+    b_v = tl.dot(b_w, b_h1)            # + b_h2/b_h3/b_h4 分块累加
+    b_v = tl.load(p_v, ...) - b_v      # v_new = Ũ - ←W·S^T
+    # (3) 存 v_new
+    # (4) 门控衰减: b_v *= exp(g_last - g);  b_h *= exp(g_last)
+    b_g_last = tl.load(g + bos*H + last_idx*H + i_h)
+    b_v = b_v * tl.where(m_t, exp(b_g_last - b_g), 0)[:, None]
+    b_h1 *= exp(b_g_last)              # b_h = γ^C · S = →S
+    # (5) h += k^T @ v_new  （K 分块）
+    b_k = tl.load(make_block_ptr(k, (K,T), (1,H*K), (0, i_t*BT), (64,BT), (0,1)))
+    b_h1 += tl.dot(b_k, b_v)</code></pre>
+
+<div class="callout callout-insight">
+<strong>双偏移空间</strong>：<code>bos</code>（token 级，定位 k/v/w/g）与 <code>boh</code>（chunk 级，定位 h 缓冲区）。
+地址计算 <code>k += (bos*H + i_h)*K</code>（token 级）vs <code>h += (boh*H + i_h)*K*V</code>（chunk 级）——
+这是读懂 varlen kernel 的最大障碍，务必区分。
+</div>
+
+<p><strong>K 维分块为什么必须</strong>：$b_h$ 是 $[K, V]$ 矩阵，$K$ 可能 256。一个 $[256, BV]$ 矩阵放不进寄存器，
+拆成 4 个 $[64, BV]$ 块（<code>b_h1</code>...<code>b_h4</code>）就能放下。这也是 <code>BT=64</code> 的来源之一。</p>
+
+<h2>10.6 输出融合：chunk_fwd_o</h2>
+
+<p>对应 $O = \overleftarrow{Q} S^\top + (QK^\top \odot M)(\widetilde{U} - \overleftarrow{W} S^\top)$。
+两部分（inter-chunk 与 intra-chunk）融合在同一 kernel，<strong>共享 Q 加载</strong>——这是 FlashAttention 思路在线性注意力上的体现：</p>
+
+<pre><code>b_o = tl.zeros([BT, BV], dtype=tl.float32)
+b_A = tl.zeros([BT, BT], dtype=tl.float32)
+for i_k in range(tl.cdiv(K, BK)):
+    b_q = tl.load(p_q, boundary_check=(0, 1))
+    b_k = tl.load(p_k, boundary_check=(0, 1))
+    b_h = tl.load(p_h, boundary_check=(0, 1))
+    b_o += tl.dot(b_q, b_h)    # inter-chunk: Q @ S^T
+    b_A += tl.dot(b_q, b_k)    # intra-chunk: Q @ K^T
+if USE_G:
+    b_o = b_o * exp(b_g)[:, None]
+    b_A = b_A * exp(b_g[:, None] - b_g[None, :])   # Γ 衰减矩阵
+m_A = (o_t[:, None] >= o_t[None, :]) & (m_t[:, None] & m_t)  # 下三角因果掩码（含对角）
+b_A = tl.where(m_A, b_A, 0)
+b_o = b_o * scale + tl.dot(b_A.to(b_v.dtype), b_v) * scale</code></pre>
+
+<p>关键：intra 的注意力矩阵 $b_A$ 在 SRAM 构造后直接乘 $b_v$，<strong>不写回 HBM</strong>——和 FlashAttention 一样省 IO。
+注意掩码是 <code>&gt;=</code>（含对角），区别于 kkt 的 strictLower <code>&gt;</code>。</p>
+
+<p>$\Gamma$ 衰减矩阵的直观样子（$g_\text{cumsum} = [-0.1, -0.3, -0.5, -0.7]$）：</p>
+<pre><code>        j=0       j=1       j=2       j=3
+i=0 [exp(0)    0         0         0    ]   对角无衰减
+i=1 [exp(-0.2) exp(0)    0         0    ]   token0→1 衰减 exp(-0.2)
+i=2 [exp(-0.4) exp(-0.2) exp(0)    0    ]
+i=3 [exp(-0.6) exp(-0.4) exp(-0.2) exp(0)]  越远的过去衰减越多</code></pre>
+
+<h2>10.7 推理路径：Recurrent kernel</h2>
+
+<p>训练用 chunkwise，<strong>推理（逐 token 解码）用 recurrent</strong>。kernel 循环体对应 GDN 递推的 4 步：</p>
+
+<pre><code>b_h = tl.zeros([BK, BV], dtype=tl.float32)
+for _ in range(0, T):
+    b_q = tl.load(p_q, mask=mask_k, other=0).to(tl.float32)
+    b_k = tl.load(p_k, mask=mask_k, other=0).to(tl.float32)
+    b_v = tl.load(p_v, mask=mask_v, other=0).to(tl.float32)
+    if USE_QK_L2NORM_IN_KERNEL:
+        b_q = b_q / tl.sqrt(tl.sum(b_q * b_q) + 1e-6)
+        b_k = b_k / tl.sqrt(tl.sum(b_k * b_k) + 1e-6)
+    b_q = b_q * scale
+    if USE_G:
+        b_g = tl.load(p_g).to(tl.float32)
+        b_h *= exp(b_g)                                       # (1) 衰减 h = α·S
+    b_v = b_beta * (b_v - tl.sum(b_h * b_k[:, None], 0))     # (2) delta: v_new = β(v - α·S@k)
+    b_h += b_k[:, None] * b_v                                 # (3) 写入 h += k·v_new^T
+    b_o = tl.sum(b_h * b_q[:, None], 0)                       # (4) 输出 o = h@q
+    tl.store(p_o, b_o.to(p_o.dtype.element_ty), mask=mask_v)
+    p_q += H*K; p_k += H*K; p_v += HV*V; p_o += HV*V          # 指针前进</code></pre>
+
+<p>对应第 8 课公式的等价改写 $S_t = \alpha_t S_{t-1} - \beta_t(\alpha_t S_{t-1} k_t - v_t) k_t^\top$：</p>
+<ul style="margin-bottom: 1rem; padding-left: 1.5rem;">
+  <li><code>b_h *= exp(b_g)</code> → $h = \alpha S_{t-1}$（衰减）</li>
+  <li><code>b_v = β(v - sum(h*k))</code> → $v_\text{new} = \beta(v - \alpha S k)$（delta 误差）</li>
+  <li><code>b_h += k * v_new</code> → $h \mathrel{+}= k \cdot v_\text{new}^\top$（写入）</li>
+</ul>
+
+<div class="callout callout-warning">
+<strong>顺序关键</strong>：门控衰减 <code>b_h *= exp(b_g)</code> 必须在 delta 更新<strong>之前</strong>执行，
+保证 delta 项擦除的是衰减后的旧值 $\alpha S_{t-1}$，对应第 8 课"先全局衰减再定向修正"的顺序。
+</div>
+
+<p><strong>为什么 recurrent 只能用 CUDA core</strong>：循环里全是 element-wise 操作——
+<code>b_h *= exp(b_g)</code> 逐元素乘、<code>b_k * b_v</code> 是外积（rank-1，本质广播逐元素乘）、
+<code>tl.sum(h * q)</code> 是归约。<strong>没有 <code>tl.dot</code>（矩阵乘）</strong>，喂不饱 tensor core。
+A100 上 tensor core 半精度 GEMM 峰值是 CUDA core element-wise 的 16 倍——这就是训练必须用 chunkwise 的根本原因。</p>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.9em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;">维度</th>
+      <th style="text-align:left; padding: 0.5rem;">Recurrent</th>
+      <th style="text-align:left; padding: 0.5rem;">Chunkwise</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 0.5rem;">场景</td><td style="padding: 0.5rem;">推理解码</td><td style="padding: 0.5rem;">训练</td></tr>
+    <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 0.5rem;">核心操作</td><td style="padding: 0.5rem;">element-wise（CUDA core）</td><td style="padding: 0.5rem;"><code>tl.dot</code>（tensor core）</td></tr>
+    <tr style="border-bottom: 1px solid var(--border);"><td style="padding: 0.5rem;">隐状态</td><td style="padding: 0.5rem;">[BK,BV] 寄存器常驻</td><td style="padding: 0.5rem;">每 chunk 起始存 HBM</td></tr>
+    <tr><td style="padding: 0.5rem;">反向传播</td><td style="padding: 0.5rem;">不支持</td><td style="padding: 0.5rem;">支持（含 checkpointing）</td></tr>
+  </tbody>
+</table>
+
+<h2>10.8 反向传播概览</h2>
+
+<p><code>chunk_gated_delta_rule_bwd</code> 分 6 步，整体是对前向的镜像（部分方向反转）：</p>
+<pre><code>(a) activation checkpointing: 重算 w/u/h/v_new（用保存的 A，计算换显存）
+(b) chunk_bwd_dv_local:  intra-chunk 的 dv（掩码是上三角，与前向相反）
+(c) bwd_dhu:  从后向前逐 chunk 递推 dh（与 fwd_h 对称，方向相反）
+(d) chunk_bwd_dqkwg:  单 kernel 合并算 dq/dk/dw/dg（减少 launch 与重复加载）
+(e) prepare_wy_repr_bwd:  WY 反向，逆矩阵链式法则 d(A^{-1}) = -A^{-1}·dA·A^{-1}
+(f) chunk_local_cumsum(dg, reverse=True):  dg 反向累积（后缀和）</code></pre>
+
+<p>最值得注意的两个点：</p>
+<ul style="margin-bottom: 1rem; padding-left: 1.5rem;">
+  <li><strong>(c) 反向递推 dh</strong>：与前向 <code>fwd_h</code> 结构对称，只是从 <code>NT-1</code> 倒着循环到 0，<code>b_dh *= exp(g_last)</code> 同样衰减。</li>
+  <li><strong>(e) 矩阵求逆的链式法则</strong>：<code>b_dA = -dot(b_A, dot(b_dA, b_A))</code>，即 $d(A^{-1}) = -A^{-1} \cdot dA \cdot A^{-1}$，再取严格下三角的负值。</li>
+</ul>
+
+<h2>10.9 参考链接</h2>
+<ul style="padding-left: 1.5rem;">
+  <li><a href="https://github.com/fla-org/flash-linear-attention/tree/main/fla/ops/gated_delta_rule">flash-linear-attention — GDN ops 源码</a>（本课解析的实现）</li>
+  <li><a href="https://github.com/fla-org/flash-linear-attention/blob/main/fla/layers/gated_deltanet.py">GDN layer 实现</a>（模型层调用方式）</li>
+  <li><a href="https://sustcsonglin.github.io/blog/2024/deltanet-2/">DeltaNet Explained (Part II) — 并行算法</a>（WY 表示与 UT 变换）</li>
+  <li><a href="https://arxiv.org/abs/2412.06464">Gated Delta Networks (ICLR '25)</a>——附录 A 有扩展 WY 表示的完整证明</li>
+  <li><a href="https://zhuanlan.zhihu.com/p/2007937984738129405">Qwen3.5 GDN 原理与代码分析</a>（本课主要素材来源）</li>
+</ul>
+
+<h2>测验</h2>
+
+<div class="quiz" id="quiz1">
+  <div class="quiz-question">问题 1：前向 6 个 kernel 中，哪个是 chunk 间串行的？为什么？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">(a) cumsum，因为要算前缀和</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">(e) fwd_h，因为隐状态 $S_{[t+1]}$ 依赖 $S_{[t]}$，chunk 间有顺序依赖</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">(f) fwd_o，因为输出要按顺序写</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">(b) kkt，因为 $KK^\top$ 要顺序累加</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz2">
+  <div class="quiz-question">问题 2：recompute_w_u_fwd 中，为什么 $\overleftarrow{W}$ 要多乘 $\exp(g)$ 而 $\widetilde{U}$ 不乘？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">$W$ 的维度比 $U$ 大，需要额外归一化</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">$U$ 的衰减已通过 $\Gamma \odot KK^\top$ 在 UT 变换内吸收；$W$ 后续要与 chunk 间的 $S^\top$ 相乘，需预先对齐到 chunk 首位衰减基准</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">$W$ 用于反向传播，$U$ 用于前向</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">这是历史遗留，没有数学原因</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz3">
+  <div class="quiz-question">问题 3：recurrent kernel 为什么只能用 CUDA core 而不能用 tensor core？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">因为 recurrent 不支持 bf16</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">因为序列太短，tensor core 启动开销不划算</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">循环里全是 element-wise 操作（外积是 rank-1、逐元素乘加、归约），没有 <code>tl.dot</code> 这种 $m \times k \times n$ 的标准 GEMM 块，喂不饱 tensor core</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">因为 Triton 在 recurrent 模式下禁用了 tensor core</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" id="quiz4">
+  <div class="quiz-question">问题 4：varlen 下，fwd_h 为什么用 chunk_offsets 而不是其他 kernel 用的 chunk_indices？</div>
+  <ul class="quiz-options">
+    <li class="quiz-option" onclick="checkAnswer(this, false)">chunk_offsets 更省内存</li>
+    <li class="quiz-option" onclick="checkAnswer(this, true)">fwd_h 的 $S$ 有 chunk 间顺序依赖，每个 program 必须跑一整条序列的所有 chunk，用 chunk_offsets 定位序列在 $h$ 缓冲区的起始；其他 kernel 无依赖可打平并行</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">chunk_indices 只支持等长序列</li>
+    <li class="quiz-option" onclick="checkAnswer(this, false)">两者完全等价，只是命名不同</li>
+  </ul>
+  <div class="quiz-feedback"></div>
+</div>
+
+<script>
+function checkAnswer(el, correct) {
+  const quiz = el.closest('.quiz');
+  const options = quiz.querySelectorAll('.quiz-option');
+  const feedback = quiz.querySelector('.quiz-feedback');
+  options.forEach(o => o.classList.remove('correct', 'incorrect'));
+  if (correct) {
+    el.classList.add('correct');
+    feedback.className = 'quiz-feedback show correct';
+    feedback.textContent = '✓ 正确！';
+  } else {
+    el.classList.add('incorrect');
+    feedback.className = 'quiz-feedback show incorrect';
+    feedback.textContent = '✗ 再想想。';
+  }
+}
+</script>
+
+<div class="lesson-nav">
+  <a href="0009-chunkwise-algorithm.html">← 第9课：分块并行算法</a>
+  <a href="../index.html">返回首页 →</a>
+</div>
+
+<div class="ask-prompt">
+  <strong>有疑问？</strong> 随时提问！比如："<code>solve_tril</code> 的两级分块具体怎么合并？" 或 "Ascend 上前代法求逆该怎么实现？"
+</div>
+
+</div>
+</body>
+</html>
