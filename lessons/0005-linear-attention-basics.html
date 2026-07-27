@@ -51,9 +51,82 @@ $Q K^\top$ 产生一个 $N \times N$ 的矩阵，因此复杂度是 $O(N^2 d)$�
 
 <h2>5.2 关键观察：去掉 Softmax 会怎样？</h2>
 
-<p>如果我们把 softmax 换成一个<strong>可分解的特征映射</strong> $\phi(\cdot)$，
-即把 $\text{softmax}(q \cdot k)$ 替换为 $\phi(q) \cdot \phi(k)$，
-那么注意力就变成了：</p>
+<p>在线性代数里，矩阵乘法满足<strong>结合律</strong>：$(AB)C = A(BC)$。
+也就是说，三个矩阵相乘时，<strong>先算哪两个不影响结果，只影响中间矩阵的大小</strong>。
+这正是线性注意力的数学根基。</p>
+
+<p>标准注意力 $\text{softmax}(QK^\top)V$ 里，$Q, K, V$ 都是 $N \times d$ 的矩阵。
+如果没有 softmax，本来可以有两种计算顺序：</p>
+
+<pre><code>标准注意力（先算大矩阵）:    (QKᵀ) × V
+                                ↓
+                              Q × Kᵀ  → [N, d] × [d, N] = [N, N]  ← 大！与序列长度相关
+                                ↓
+                             [N, N] × V[N, d]  → [N, d]
+
+线性注意力（先算小矩阵）:    Q × (KᵀV)
+                                ↓
+                              Kᵀ × V  → [d, N] × [N, d] = [d, d]  ← 小！与序列长度无关
+                                ↓
+                             Q[N, d] × [d, d]  → [N, d]
+</code></pre>
+
+<p>用前面 $N=6, d=4$ 的例子直观对比：</p>
+
+<table style="width:100%; border-collapse: collapse; font-size: 0.9em; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding: 0.5rem;">计算顺序</th>
+      <th style="text-align:center; padding: 0.5rem;">第一步（中间矩阵）</th>
+      <th style="text-align:center; padding: 0.5rem;">第二步（输出）</th>
+      <th style="text-align:center; padding: 0.5rem;">中间矩阵大小</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding: 0.5rem;">标准: $(QK^\top)V$</td>
+      <td style="text-align:center; padding: 0.5rem;">$QK^\top \to [N, N]$</td>
+      <td style="text-align:center; padding: 0.5rem;">$[N, N] \times V \to [N, d]$</td>
+      <td style="text-align:center; padding: 0.5rem;">$6 \times 6 = 36$</td>
+    </tr>
+    <tr>
+      <td style="padding: 0.5rem;">线性: $Q(K^\top V)$</td>
+      <td style="text-align:center; padding: 0.5rem;">$K^\top V \to [d, d]$</td>
+      <td style="text-align:center; padding: 0.5rem;">$Q \times [d, d] \to [N, d]$</td>
+      <td style="text-align:center; padding: 0.5rem;">$4 \times 4 = 16$</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>当 $N=10000, d=128$ 时差距惊人：标准注意力中间矩阵是 $10^8$ 个元素，
+线性注意力只有 $16384$ 个——差了近<strong>六千倍</strong>。</p>
+
+<div class="callout callout-warning">
+<strong>但 softmax 坏了这件事</strong>。先看 softmax 的定义——对一个向量 $x = (x_1, x_2, \dots, x_N)$：</p>
+
+<div class="math-block">
+$$\text{softmax}(x_i) = \frac{e^{x_i}}{\sum_{j=1}^{N} e^{x_j}}$$
+</div>
+
+<p>注意<strong>分母</strong>：要算第 $i$ 个位置的输出，必须把这一行<strong>所有 $N$ 个元素</strong>
+$e^{x_1}, e^{x_2}, \dots, e^{x_N}$ 加起来。每个位置的输出都耦合着整行所有元素。</p>
+
+<p>对应到注意力上，$\text{softmax}(QK^\top)$ 作用在 $QK^\top$ 的<strong>每一行</strong>上。
+第 $t$ 行对应第 $t$ 个 query，它要对 $t$ 到所有 key 的打分做归一化：</p>
+
+<div class="math-block">
+$$\text{softmax}(QK^\top)_{t,i} = \frac{e^{(QK^\top)_{t,i}}}{\sum_{j=1}^{N} e^{(QK^\top)_{t,j}}}$$
+</div>
+
+<p>要算这一行，<strong>必须先把整个 $QK^\top \in \mathbb{R}^{N \times N}$ 算出来</strong>——
+因为分母 $\sum_{j=1}^{N} e^{(QK^\top)_{t,j}}$ 需要 $QK^\top$ 第 $t$ 行的全部 $N$ 个元素。
+这就锁死了计算顺序：<strong>必须先算 $QK^\top$（大矩阵），才能 softmax，最后才能乘 $V$</strong>。
+无法像线性代数那样把 $V$ 先合并进括号走 $Q(K^\top V)$ 路线。softmax 的非线性耦合让 $N \times N$ 大矩阵无法避免。
+</div>
+
+<p>解决办法就是<strong>把 softmax 换成一个可分解的特征映射 $\phi(\cdot)$</strong>，
+即把 $\text{softmax}(q \cdot k)$ 替换为 $\phi(q) \cdot \phi(k)$。
+这样注意力就变成 $\phi(Q)(\phi(K)^\top V)$，可以走"先算小矩阵"的路线了：</p>
 
 <div class="math-block">
 $$o_t = \sum_{i=1}^{t} \phi(q_t) \cdot \phi(k_i) \cdot v_i = \phi(q_t) \cdot \left(\sum_{i=1}^{t} \phi(k_i) \otimes v_i\right)$$
