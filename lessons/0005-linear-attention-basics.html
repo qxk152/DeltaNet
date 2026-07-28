@@ -58,18 +58,21 @@ $Q K^\top$ 产生一个 $N \times N$ 的矩阵，因此复杂度是 $O(N^2 d)$�
 <p>标准注意力 $\text{softmax}(QK^\top)V$ 里，$Q, K, V$ 都是 $N \times d$ 的矩阵。
 如果没有 softmax，本来可以有两种计算顺序：</p>
 
-<pre><code>标准注意力（先算大矩阵）:    (QKᵀ) × V
-                                ↓
-                              Q × Kᵀ  → [N, d] × [d, N] = [N, N]  ← 大！与序列长度相关
-                                ↓
-                             [N, N] × V[N, d]  → [N, d]
+<p><strong>标准注意力</strong>（先算大矩阵）$(QK^\top)V$：</p>
+<div class="math-block">
+$$
+\underbrace{Q\,K^\top}_{[N,d]\times[d,\,N]\,=\,[N,N]\ \text{（大！与序列长度相关）}}\; V
+\;\longrightarrow\; [N,N]\times[N,d] = [N,d]
+$$
+</div>
 
-线性注意力（先算小矩阵）:    Q × (KᵀV)
-                                ↓
-                              Kᵀ × V  → [d, N] × [N, d] = [d, d]  ← 小！与序列长度无关
-                                ↓
-                             Q[N, d] × [d, d]  → [N, d]
-</code></pre>
+<p><strong>线性注意力</strong>（先算小矩阵）$Q(K^\top V)$：</p>
+<div class="math-block">
+$$
+Q\, \underbrace{K^\top V}_{[d,N]\times[N,\,d]\,=\,[d,d]\ \text{（小！与序列长度无关）}}
+\;\longrightarrow\; [N,d]\times[d,d] = [N,d]
+$$
+</div>
 
 <p>用前面 $N=6, d=4$ 的例子直观对比：</p>
 
@@ -208,11 +211,10 @@ GDN 要改进的，正是这个记忆的更新方式。
     <button class="demo-btn" onclick="stepDemo(1)">下一步 →</button>
     <button class="demo-btn" onclick="stepDemo(2)">运行全部</button>
   </div>
-  <div class="demo-output" id="demoOutput">点击"下一步"开始演示</div>
+  <div class="demo-output katex-mode" id="demoOutput">点击“下一步”开始演示</div>
 </div>
 
 <script>
-// Simple 2D demo: k and v are 2-dim vectors, S is 2x2 matrix
 const seq = [
   { k: [1, 0], v: [2, 1], q: [1, 1] },
   { k: [0, 1], v: [1, 3], q: [1, 0] },
@@ -221,50 +223,54 @@ const seq = [
 ];
 
 let demoStep = 0;
-let S = [[0,0],[0,0]];
 
-function fmtVec(v) { return "[" + v.map(x => x.toFixed(1)).join(", ") + "]"; }
-function fmtMat(m) {
-  return m.map(r => "  [" + r.map(x => x.toFixed(1).padStart(5)).join(", ") + "]").join("\n");
-}
 function dot(a, b) { return a[0]*b[0] + a[1]*b[1]; }
 function outer(v, k) { return [[v[0]*k[0], v[0]*k[1]], [v[1]*k[0], v[1]*k[1]]]; }
 function matVec(m, v) { return [m[0][0]*v[0]+m[0][1]*v[1], m[1][0]*v[0]+m[1][1]*v[1]]; }
 
+function fmtNum(x){ return Number.isInteger(x) ? String(x) : x.toFixed(1); }
+function vecTex(v){ return '\\begin{bmatrix} ' + v.map(fmtNum).join(' \\\\ ') + ' \\end{bmatrix}'; }
+function matTex(m){ return '\\begin{bmatrix} ' + m.map(r => r.map(fmtNum).join(' & ')).join(' \\\\ ') + ' \\end{bmatrix}'; }
+function tex(latex){ return katex.renderToString(latex, {displayMode:true, throwOnError:false}); }
+function blk(title, latex){ return '<div class="demo-mat"><div class="demo-mat-title">'+title+'</div>'+tex(latex)+'</div>'; }
+function row(){ return '<div class="demo-row">' + Array.prototype.slice.call(arguments).join('') + '</div>'; }
+function note(t){ return '<p class="demo-note">'+t+'</p>'; }
+
+function stepBlock(n, tok, ov, s, o) {
+  return '<div class="demo-step">' +
+    '<div class="demo-step-title">步骤 ' + n + '</div>' +
+    row(blk('k', vecTex(tok.k)), blk('v', vecTex(tok.v)), blk('q', vecTex(tok.q))) +
+    blk('k \\otimes v', matTex(ov)) +
+    blk('S（更新后）', 'S = ' + matTex(s)) +
+    blk('o = q \\cdot S', 'o = ' + vecTex(o)) +
+    '</div>';
+}
+
 function renderDemo() {
+  const el = document.getElementById('demoOutput');
   if (demoStep === 0) {
-    document.getElementById('demoOutput').textContent =
-      "初始状态:\n" +
-      "  S = [[0.0, 0.0],\n" +
-      "       [0.0, 0.0]]\n\n" +
-      "等待处理 4 个 token...";
+    el.innerHTML = blk('初始状态 S', 'S = ' + matTex([[0,0],[0,0]])) +
+      note('等待处理 4 个 token…');
     return;
   }
-  let lines = [];
+  let s = [[0,0],[0,0]];
+  let html = '';
   for (let i = 0; i < demoStep; i++) {
     const tok = seq[i];
-    // Update S
     const ov = outer(tok.v, tok.k);
-    S[0][0] += ov[0][0]; S[0][1] += ov[0][1];
-    S[1][0] += ov[1][0]; S[1][1] += ov[1][1];
-    // Compute output
-    const o = matVec(S, tok.q);
-    lines.push("=== 步骤 " + (i+1) + " ===");
-    lines.push("  k = " + fmtVec(tok.k) + ",  v = " + fmtVec(tok.v) + ",  q = " + fmtVec(tok.q));
-    lines.push("  k ⊗ v = [[" + ov[0][0].toFixed(1) + ", " + ov[0][1].toFixed(1) + "], [" + ov[1][0].toFixed(1) + ", " + ov[1][1].toFixed(1) + "]]");
-    lines.push("  S (更新后) =");
-    lines.push(fmtMat(S));
-    lines.push("  o = q · S = " + fmtVec(o));
-    lines.push("");
+    s[0][0] += ov[0][0]; s[0][1] += ov[0][1];
+    s[1][0] += ov[1][0]; s[1][1] += ov[1][1];
+    const o = matVec(s, tok.q);
+    html += stepBlock(i+1, tok, ov, s.map(r => r.slice()), o);
   }
-  document.getElementById('demoOutput').textContent = lines.join("\n");
+  el.innerHTML = html;
 }
 
 function stepDemo(action) {
-  if (action === 0) { demoStep = 0; S = [[0,0],[0,0]]; renderDemo(); }
+  if (action === 0) { demoStep = 0; renderDemo(); }
   else if (action === 1) { if (demoStep < seq.length) { demoStep++; renderDemo(); } }
   else if (action === 2) {
-    demoStep = 0; S = [[0,0],[0,0]];
+    demoStep = 0; renderDemo();
     let interval = setInterval(() => {
       demoStep++;
       renderDemo();

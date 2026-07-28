@@ -247,6 +247,14 @@ blockquote {
   line-height: 1.55;
 }
 
+.demo-step {
+  margin-bottom: 1.2rem;
+  padding-bottom: 1.2rem;
+  border-bottom: 1px solid var(--border);
+}
+.demo-step:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+.demo-step-title { font-weight: 600; margin-bottom: 0.6rem; }
+
 /* SVG chart figure */
 .chart-figure {
   background: #fff;

@@ -241,11 +241,20 @@ b_o = b_o * scale + tl.dot(b_A.to(b_v.dtype), b_v) * scale</code></pre>
 注意掩码是 <code>&gt;=</code>（含对角），区别于 kkt 的 strictLower <code>&gt;</code>。</p>
 
 <p>$\Gamma$ 衰减矩阵的直观样子（$g_\text{cumsum} = [-0.1, -0.3, -0.5, -0.7]$）：</p>
-<pre><code>        j=0       j=1       j=2       j=3
-i=0 [exp(0)    0         0         0    ]   对角无衰减
-i=1 [exp(-0.2) exp(0)    0         0    ]   token0→1 衰减 exp(-0.2)
-i=2 [exp(-0.4) exp(-0.2) exp(0)    0    ]
-i=3 [exp(-0.6) exp(-0.4) exp(-0.2) exp(0)]  越远的过去衰减越多</code></pre>
+
+<div class="math-block">
+$$
+\Gamma = \begin{array}{c|cccc}
+ & j{=}0 & j{=}1 & j{=}2 & j{=}3 \\ \hline
+i{=}0 & e^{0} & 0 & 0 & 0 \\
+i{=}1 & e^{-0.2} & e^{0} & 0 & 0 \\
+i{=}2 & e^{-0.4} & e^{-0.2} & e^{0} & 0 \\
+i{=}3 & e^{-0.6} & e^{-0.4} & e^{-0.2} & e^{0}
+\end{array}
+$$
+</div>
+
+<p>对角无衰减；越远的过去（$j$ 越小）衰减越多——例如 token0→1 衰减 $e^{-0.2}$，token0→3 衰减 $e^{-0.6}$。上三角（$j>i$，即"未来"）恒为 0，对应因果掩码。</p>
 
 <h2>10.7 推理路径：Recurrent kernel</h2>
 
