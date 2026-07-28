@@ -54,16 +54,33 @@ $$W \leftarrow W - \eta \cdot \frac{\partial L}{\partial W}$$
   <li><strong>lr 合适</strong>：平滑下降到 loss 最低点</li>
 </ul>
 
-<pre><code>loss
-  │ \      ← lr 太大：跳过谷底，来回震荡
-  │  \    /\    /
-  │   \  /  \  /
-  │    \/    \/
-  │              ← lr 合适：平滑下降到谷底
-  │     -
-  │      -  -   ← lr 太小：下降极慢
-  └────────────────
-</code></pre>
+<div class="chart-figure">
+<svg viewBox="0 0 480 285" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="学习率对损失曲线的影响" style="width:100%;max-width:460px;height:auto;display:block;margin:0 auto;">
+  <defs>
+    <marker id="lrArr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6b6b6b"/>
+    </marker>
+  </defs>
+  <line x1="50" y1="28" x2="50" y2="218" stroke="#6b6b6b" stroke-width="1.5" marker-start="url(#lrArr)"/>
+  <line x1="50" y1="218" x2="462" y2="218" stroke="#6b6b6b" stroke-width="1.5" marker-end="url(#lrArr)"/>
+  <text x="44" y="26" text-anchor="end" font-size="13" fill="#6b6b6b" font-style="italic">loss</text>
+  <text x="462" y="236" text-anchor="end" font-size="12" fill="#6b6b6b">训练步数</text>
+  <line x1="50" y1="205" x2="458" y2="205" stroke="#c9c2ba" stroke-width="1" stroke-dasharray="4 4"/>
+  <text x="460" y="209" font-size="10" fill="#9a9a9a">谷底</text>
+  <path d="M 50 42 Q 100 175 165 196 T 458 202" fill="none" stroke="#2a9d4a" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M 50 42 L 84 180 L 117 92 L 156 182 L 196 95 L 240 176 L 286 99 L 334 172 L 386 103 L 458 160" fill="none" stroke="#c1440e" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 50 42 L 458 120" fill="none" stroke="#6b6b6b" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="6 4"/>
+  <g font-size="12" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+    <line x1="60" y1="252" x2="84" y2="252" stroke="#c1440e" stroke-width="2.4"/>
+    <text x="90" y="256" fill="#444">lr 太大：跳过谷底，来回震荡</text>
+    <line x1="270" y1="252" x2="294" y2="252" stroke="#2a9d4a" stroke-width="2.4"/>
+    <text x="300" y="256" fill="#444">合适：平滑下降到谷底</text>
+    <line x1="60" y1="272" x2="84" y2="272" stroke="#6b6b6b" stroke-width="2.4" stroke-dasharray="6 4"/>
+    <text x="90" y="276" fill="#444">lr 太小：下降极慢</text>
+  </g>
+</svg>
+</div>
 
 <h3>2.1.2 参数 vs 超参数：谁来定学习率？</h3>
 
@@ -195,7 +212,9 @@ $$L = \text{loss}(z_2, y)$$
 
 <p>前向传播就是从左到右，一步步算出输出和损失。同时，这些操作构成一个<strong>计算图</strong>：</p>
 
-<pre><code>x → [W₁] → z₁ → [σ] → a₁ → [W₂] → z₂ → [loss] → L</code></pre>
+<div class="math-block">
+$$x \xrightarrow{W_1} z_1 \xrightarrow{\;\sigma\;} a_1 \xrightarrow{W_2} z_2 \xrightarrow{\;\text{loss}\;} L$$
+</div>
 
 <h2>2.3 链式法则：反向传播的数学基础</h2>
 
